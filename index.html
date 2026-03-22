@@ -251,6 +251,10 @@
   .block.editing .block-touch-overlay {
     display: none;
   }
+  /* In connect mode — overlay steps aside so port and card are tappable */
+  .mode-connect .block-touch-overlay {
+    pointer-events: none;
+  }
 
   /* Resize handles */
   .block-resize-r {
@@ -324,7 +328,7 @@
   .block-port:hover { border-color: var(--accent); background: var(--accent); }
 
   /* CONTEXT MENU */
-  #ctx-menu {
+  #ctx-menu, #conn-ctx-menu {
     position: fixed; z-index: 2000;
     background: var(--surface);
     border: 1px solid var(--border2);
@@ -334,7 +338,7 @@
     min-width: 160px;
     display: none;
   }
-  #ctx-menu.visible { display: block; }
+  #ctx-menu.visible, #conn-ctx-menu.visible { display: block; }
   .ctx-item {
     display: flex; align-items: center; gap: 8px;
     padding: 7px 10px; border-radius: 6px;
@@ -660,7 +664,13 @@
   </div>
 </div>
 
-<!-- RESET CONFIRM OVERLAY -->
+<!-- CONNECTION CONTEXT MENU -->
+<div id="conn-ctx-menu">
+  <div class="ctx-item danger" id="conn-ctx-delete">
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 5 13 5"/><path d="M5 5V3h6v2"/><path d="M6 7l.5 6M10 7l-.5 6M4 5l.7 8.5a1 1 0 0 0 1 .5h4.6a1 1 0 0 0 1-.5L12 5"/></svg>
+    Delete link
+  </div>
+</div>
 <div id="reset-overlay">
   <div class="reset-card" id="reset-card">
     <span class="reset-icon">⚠️</span>
@@ -1041,6 +1051,13 @@ function setupBlockEvents(el, id) {
   overlay.addEventListener('pointerdown', e => {
     if (e.pointerType === 'mouse') return;
 
+    // In connect mode — let events through to the card's click handler
+    if (state.mode === 'connect') {
+      if (state.connectFrom && state.connectFrom !== id) finishConnect(id);
+      else startConnect(id);
+      return;
+    }
+
     e.stopPropagation();
     overlay.setPointerCapture(e.pointerId);
     activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
@@ -1112,7 +1129,7 @@ function setupBlockEvents(el, id) {
         overlay.removeEventListener('pointermove', onMove);
         overlay.removeEventListener('pointerup', onUp);
         canvasWrap.classList.remove('panning');
-        if (!moved) {
+        if (!moved && state.mode !== 'connect') {
           selectBlock(id);
           el.classList.add('editing');
           ta.focus();
@@ -1139,7 +1156,17 @@ function setupBlockEvents(el, id) {
 
   // Textarea — mouse only now (touch handled by overlay)
   ta.addEventListener('pointerdown', e => {
-    if (e.pointerType !== 'mouse') return;
+    if (e.pointerType !== 'mouse') {
+      // Touch on textarea — if in connect mode, finish connect and block focus
+      if (state.mode === 'connect') {
+        e.preventDefault();
+        e.stopPropagation();
+        if (state.connectFrom && state.connectFrom !== id) finishConnect(id);
+        else startConnect(id);
+        return;
+      }
+      return; // all other touch handled by overlay
+    }
     e.stopPropagation();
     if (state.mode === 'connect') return;
     selectBlock(id);
@@ -1354,26 +1381,67 @@ function clearConnecting() {
   document.querySelectorAll('.block').forEach(el => el.classList.remove('connecting-source'));
 }
 
+function getConnectionPoints(fb, fromEl, tb, toEl) {
+  // Card centers
+  const fW = fromEl.offsetWidth,  fH = fromEl.offsetHeight;
+  const tW = toEl.offsetWidth,    tH = toEl.offsetHeight;
+  const fcx = fb.x + fW / 2, fcy = fb.y + fH / 2;
+  const tcx = tb.x + tW / 2, tcy = tb.y + tH / 2;
+
+  // Candidate anchor points: right, left, bottom, top of each card
+  const fromAnchors = {
+    right:  { x: fb.x + fW, y: fcy, nx:  1, ny: 0 },
+    left:   { x: fb.x,      y: fcy, nx: -1, ny: 0 },
+    bottom: { x: fcx, y: fb.y + fH, nx: 0, ny:  1 },
+    top:    { x: fcx, y: fb.y,      nx: 0, ny: -1 },
+  };
+  const toAnchors = {
+    right:  { x: tb.x + tW, y: tcy, nx:  1, ny: 0 },
+    left:   { x: tb.x,      y: tcy, nx: -1, ny: 0 },
+    bottom: { x: tcx, y: tb.y + tH, nx: 0, ny:  1 },
+    top:    { x: tcx, y: tb.y,      nx: 0, ny: -1 },
+  };
+
+  // Pick the pair with shortest distance where anchors face away from each other
+  let best = null, bestDist = Infinity;
+  for (const [fk, fa] of Object.entries(fromAnchors)) {
+    for (const [tk, ta] of Object.entries(toAnchors)) {
+      // Anchors should face outward — dot product of normals should be <= 0
+      // (opposite sides connect naturally, same sides don't)
+      if (fa.nx * ta.nx + fa.ny * ta.ny > 0.1) continue;
+      const d = Math.hypot(fa.x - ta.x, fa.y - ta.y);
+      if (d < bestDist) { bestDist = d; best = { fa, ta }; }
+    }
+  }
+  if (!best) best = { fa: fromAnchors.right, ta: toAnchors.left };
+  return best;
+}
+
 function renderConnections() {
   svg.innerHTML = '';
   for (const conn of state.connections) {
     const fromEl = document.getElementById(conn.from);
-    const toEl = document.getElementById(conn.to);
+    const toEl   = document.getElementById(conn.to);
     if (!fromEl || !toEl) continue;
 
     const fb = getBlock(conn.from), tb = getBlock(conn.to);
-    const x1 = fb.x + fromEl.offsetWidth;
-    const y1 = fb.y + fromEl.offsetHeight / 2;
-    const x2 = tb.x;
-    const y2 = tb.y + toEl.offsetHeight / 2;
-    const dx = Math.abs(x2 - x1) * 0.4;
+    const { fa, ta } = getConnectionPoints(fb, fromEl, tb, toEl);
+
+    // Bézier control point distance — proportional to anchor distance
+    const dist = Math.hypot(fa.x - ta.x, fa.y - ta.y);
+    const cp = Math.max(60, dist * 0.45);
+    const cx1 = fa.x + fa.nx * cp;
+    const cy1 = fa.y + fa.ny * cp;
+    const cx2 = ta.x + ta.nx * cp;
+    const cy2 = ta.y + ta.ny * cp;
+
+    const d = `M ${fa.x} ${fa.y} C ${cx1} ${cy1}, ${cx2} ${cy2}, ${ta.x} ${ta.y}`;
 
     const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
     g.className.baseVal = 'conn-group';
     g.dataset.connId = conn.id;
 
     const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-    const d = `M ${x1} ${y1} C ${x1+dx} ${y1}, ${x2-dx} ${y2}, ${x2} ${y2}`;
     path.setAttribute('d', d);
     path.classList.add('connection-line');
     if (state.selectedConn === conn.id) path.classList.add('selected');
@@ -1381,10 +1449,33 @@ function renderConnections() {
     const hit = document.createElementNS('http://www.w3.org/2000/svg', 'path');
     hit.setAttribute('d', d);
     hit.classList.add('connection-line-hit');
+
+    // Click/tap → select
     hit.addEventListener('click', e => {
       e.stopPropagation();
       selectConn(conn.id);
     });
+
+    // Right-click → context menu
+    hit.addEventListener('contextmenu', e => {
+      e.preventDefault();
+      e.stopPropagation();
+      selectConn(conn.id);
+      showConnCtxMenu(e.clientX, e.clientY);
+    });
+
+    // Long-press (touch) → context menu
+    let connLongPress;
+    hit.addEventListener('pointerdown', e => {
+      if (e.pointerType !== 'touch') return;
+      connLongPress = setTimeout(() => {
+        selectConn(conn.id);
+        showConnCtxMenu(e.clientX, e.clientY);
+      }, 500);
+    });
+    hit.addEventListener('pointerup',     () => clearTimeout(connLongPress));
+    hit.addEventListener('pointermove',   () => clearTimeout(connLongPress));
+    hit.addEventListener('pointercancel', () => clearTimeout(connLongPress));
 
     g.appendChild(path);
     g.appendChild(hit);
@@ -1702,11 +1793,31 @@ canvasWrap.addEventListener('click', e => {
 let ctxTargetId = null;
 function showCtxMenu(x, y, blockId) {
   ctxTargetId = blockId;
+  hideConnCtxMenu();
   ctxMenu.style.left = Math.min(x, window.innerWidth - 170) + 'px';
   ctxMenu.style.top = Math.min(y, window.innerHeight - 120) + 'px';
   ctxMenu.classList.add('visible');
 }
 function hideCtxMenu() { ctxMenu.classList.remove('visible'); }
+
+// Connection context menu
+const connCtxMenu = document.getElementById('conn-ctx-menu');
+function showConnCtxMenu(x, y) {
+  hideCtxMenu();
+  connCtxMenu.style.left = Math.min(x, window.innerWidth - 170) + 'px';
+  connCtxMenu.style.top = Math.min(y, window.innerHeight - 80) + 'px';
+  connCtxMenu.classList.add('visible');
+}
+function hideConnCtxMenu() { connCtxMenu.classList.remove('visible'); }
+
+document.getElementById('conn-ctx-delete').addEventListener('click', () => {
+  deleteSelectedConn();
+  hideConnCtxMenu();
+});
+
+document.addEventListener('click', e => {
+  if (!connCtxMenu.contains(e.target)) hideConnCtxMenu();
+});
 
 document.getElementById('ctx-duplicate').addEventListener('click', () => { duplicateBlock(ctxTargetId); hideCtxMenu(); });
 document.getElementById('ctx-color').addEventListener('click', () => { cycleBlockColor(ctxTargetId); hideCtxMenu(); });
@@ -2120,9 +2231,14 @@ function updateMinimap() {
   for (const conn of state.connections) {
     const fb = getBlock(conn.from), tb = getBlock(conn.to);
     if (!fb || !tb) continue;
+    // Draw line between centers in minimap
+    const fx = (fb.x + (fb.w || 220) / 2) * scale + offX;
+    const fy = (fb.y + 60) * scale + offY;
+    const tx = (tb.x + (tb.w || 220) / 2) * scale + offX;
+    const ty = (tb.y + 60) * scale + offY;
     ctx.beginPath();
-    ctx.moveTo(fb.x * scale + offX + (fb.w || 220) * scale, fb.y * scale + offY + 30 * scale);
-    ctx.lineTo(tb.x * scale + offX, tb.y * scale + offY + 30 * scale);
+    ctx.moveTo(fx, fy);
+    ctx.lineTo(tx, ty);
     ctx.stroke();
   }
 
