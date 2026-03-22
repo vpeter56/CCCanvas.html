@@ -237,6 +237,20 @@
   }
   .block-textarea::placeholder { color: var(--text2); }
 
+  /* Touch overlay — sits over textarea on touch devices, intercepts pan vs tap */
+  .block-touch-overlay {
+    position: absolute;
+    inset: 0;
+    top: 36px; /* below header */
+    z-index: 5;
+    touch-action: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+  /* Hidden when card is in edit mode (user tapped to type) */
+  .block.editing .block-touch-overlay {
+    display: none;
+  }
+
   /* Resize handles */
   .block-resize-r {
     position: absolute; top: 8px; right: -5px; bottom: 8px;
@@ -265,7 +279,6 @@
   }
 
   /* Overflow indicator — smooth gradient outline on bottom half */
-  /* Uses a pseudo-element with a CSS gradient border that fades in from top */
   .block::after {
     content: '';
     position: absolute;
@@ -848,6 +861,7 @@ function renderBlock(block) {
       <div class="block-body">
         <textarea class="block-textarea" placeholder="Write anything..." spellcheck="false"></textarea>
       </div>
+      <div class="block-touch-overlay"></div>
       <div class="block-resize-r"></div>
       <div class="block-resize-b"></div>
       <div class="block-resize-br"></div>
@@ -941,52 +955,72 @@ function setupBlockEvents(el, id) {
     el.setPointerCapture(e.pointerId);
   });
 
-  // Textarea — tap focuses, drag pans canvas
-  ta.addEventListener('pointerdown', e => {
-    if (state.mode === 'connect') { e.stopPropagation(); return; }
-    if (e.pointerType === 'mouse') {
-      // Mouse: just select, don't interfere
-      e.stopPropagation();
-      selectBlock(id);
-      return;
-    }
-    // Touch/pen on textarea: decide tap vs drag
+  const overlay = el.querySelector('.block-touch-overlay');
+
+  // Overlay intercepts all touch input on the card body
+  // — drag → pan canvas, tap → dismiss overlay and focus textarea
+  overlay.addEventListener('pointerdown', e => {
+    if (e.pointerType === 'mouse') return; // mouse clicks go straight through
+
+    e.stopPropagation();
+    overlay.setPointerCapture(e.pointerId);
+
     const startX = e.clientX, startY = e.clientY;
+    let lastX = startX, lastY = startY;
     let moved = false;
-    let tapTimer = null;
-    let panStarted = false;
 
     const onMove = ev => {
-      if (Math.abs(ev.clientX - startX) > 6 || Math.abs(ev.clientY - startY) > 6) {
+      const dx = ev.clientX - lastX;
+      const dy = ev.clientY - lastY;
+      if (!moved && (Math.abs(ev.clientX - startX) > 5 || Math.abs(ev.clientY - startY) > 5)) {
         moved = true;
-        clearTimeout(tapTimer);
-        if (!panStarted) {
-          panStarted = true;
-          // Hand off to canvas panning
-          activePointers.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
-          state.panning = true;
-          state.panStart = { x: ev.clientX - state.panX, y: ev.clientY - state.panY };
-          state._didPan = true;
-          canvasWrap.classList.add('panning');
-          canvasWrap.setPointerCapture(ev.pointerId);
-        }
+        state._didPan = true;
+        canvasWrap.classList.add('panning');
       }
+      if (moved) {
+        state.panX += dx;
+        state.panY += dy;
+        applyTransform();
+      }
+      lastX = ev.clientX;
+      lastY = ev.clientY;
     };
-    const onUp = ev => {
-      ta.removeEventListener('pointermove', onMove);
-      ta.removeEventListener('pointerup', onUp);
-      clearTimeout(tapTimer);
+
+    const onUp = () => {
+      overlay.removeEventListener('pointermove', onMove);
+      overlay.removeEventListener('pointerup', onUp);
+      canvasWrap.classList.remove('panning');
       if (!moved) {
-        // It was a tap — focus + select
+        // Tap — enter edit mode: hide overlay, focus textarea
         selectBlock(id);
+        el.classList.add('editing');
         ta.focus();
       }
     };
 
-    ta.addEventListener('pointermove', onMove);
-    ta.addEventListener('pointerup', onUp);
+    overlay.addEventListener('pointermove', onMove);
+    overlay.addEventListener('pointerup', onUp);
+  });
 
-    // Don't stopPropagation — let canvasWrap also see this if needed
+  // Mouse clicks on overlay — just pass through to textarea
+  overlay.addEventListener('click', e => {
+    if (e.pointerType !== 'touch') {
+      el.classList.add('editing');
+      ta.focus();
+    }
+  });
+
+  // When textarea loses focus — restore overlay so next touch can pan again
+  ta.addEventListener('blur', () => {
+    el.classList.remove('editing');
+  });
+
+  // Textarea — mouse only now (touch handled by overlay)
+  ta.addEventListener('pointerdown', e => {
+    if (e.pointerType !== 'mouse') return;
+    e.stopPropagation();
+    if (state.mode === 'connect') return;
+    selectBlock(id);
   });
 
   ta.addEventListener('input', () => {
