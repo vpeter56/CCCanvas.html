@@ -116,6 +116,8 @@
   #canvas-wrap {
     position: fixed; top: 52px; left: 0; right: 0; bottom: 0;
     overflow: hidden; cursor: default;
+    touch-action: none;
+    -webkit-touch-callout: none;
   }
   #canvas-wrap.mode-connect { cursor: crosshair; }
   #canvas-wrap.mode-add { cursor: cell; }
@@ -285,6 +287,60 @@
   #save-dot.dirty { opacity: 1; background: #f0a050; }
   #save-dot.saving { opacity: 1; background: var(--accent); animation: pulse 1s infinite; }
 
+  /* RESET CONFIRM OVERLAY */
+  #reset-overlay {
+    position: fixed; inset: 0; z-index: 6000;
+    background: rgba(0,0,0,0.75);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    display: none; align-items: center; justify-content: center;
+  }
+  #reset-overlay.visible { display: flex; }
+  .reset-card {
+    background: var(--surface);
+    border: 1px solid #ff6b6b44;
+    border-radius: 14px; padding: 28px 32px;
+    max-width: 380px; width: 90%;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.6);
+    text-align: center;
+  }
+  .reset-card .reset-icon {
+    font-size: 32px; margin-bottom: 12px; display: block;
+  }
+  .reset-card h2 {
+    font-family: var(--font-display); font-weight: 600;
+    font-size: 20px; margin-bottom: 10px; color: var(--text);
+  }
+  .reset-card p {
+    font-size: 12px; color: var(--text2); line-height: 1.7;
+    margin-bottom: 22px;
+  }
+  .reset-card p strong { color: #ff6b6b; }
+  .reset-btns { display: flex; gap: 10px; }
+  .reset-btns button {
+    flex: 1; padding: 10px; border-radius: 8px;
+    font-family: var(--font-mono); font-size: 12px; cursor: pointer;
+    border: 1px solid var(--border2); transition: all 0.15s;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .reset-btn-cancel { background: var(--surface2); color: var(--text); }
+  .reset-btn-cancel:hover { border-color: var(--border2); background: var(--border); }
+  .reset-btn-confirm {
+    background: transparent; color: #ff6b6b; border-color: #ff6b6b55;
+  }
+  .reset-btn-confirm:hover, .reset-btn-confirm:active {
+    background: #ff6b6b18; border-color: #ff6b6b;
+  }
+
+  @keyframes shake {
+    0%,100% { transform: translateX(0); }
+    20% { transform: translateX(-6px); }
+    40% { transform: translateX(6px); }
+    60% { transform: translateX(-4px); }
+    80% { transform: translateX(4px); }
+  }
+  .reset-card.shake { animation: shake 0.35s ease; }
+
   /* HELP OVERLAY */
   #help-overlay {
     position: fixed; inset: 0; z-index: 5000;
@@ -393,6 +449,12 @@
     </svg>
   </button>
 
+  <button class="tool-btn" id="btn-reset" title="Reset canvas — delete everything" style="color: #ff6b6b88;">
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M2 8a6 6 0 1 0 1.5-3.9"/><polyline points="2 3 2 8 7 8"/>
+    </svg>
+  </button>
+
   <button class="tool-btn" id="btn-help" title="Help (?)">
     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
       <circle cx="8" cy="8" r="6.5"/>
@@ -437,6 +499,19 @@
   <div class="ctx-item danger" id="ctx-delete">
     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 5 13 5"/><path d="M5 5V3h6v2"/><path d="M6 7l.5 6M10 7l-.5 6M4 5l.7 8.5a1 1 0 0 0 1 .5h4.6a1 1 0 0 0 1-.5L12 5"/></svg>
     Delete block
+  </div>
+</div>
+
+<!-- RESET CONFIRM OVERLAY -->
+<div id="reset-overlay">
+  <div class="reset-card" id="reset-card">
+    <span class="reset-icon">⚠️</span>
+    <h2 id="reset-title">Reset Canvas?</h2>
+    <p id="reset-msg">This will <strong>permanently delete</strong> all blocks, connections, and saved data. This cannot be undone.</p>
+    <div class="reset-btns">
+      <button class="reset-btn-cancel" id="reset-cancel">Cancel</button>
+      <button class="reset-btn-confirm" id="reset-confirm">Yes, delete everything</button>
+    </div>
   </div>
 </div>
 
@@ -511,10 +586,16 @@ const minimapViewport = document.getElementById('minimap-viewport');
 const fileInput = document.getElementById('file-input');
 
 // ==================== TRANSFORM ====================
+let _rafPending = false;
 function applyTransform() {
-  canvas.style.transform = `translate(${state.panX}px, ${state.panY}px) scale(${state.zoom})`;
-  statusZoom.textContent = Math.round(state.zoom * 100) + '%';
-  updateMinimap();
+  if (_rafPending) return;
+  _rafPending = true;
+  requestAnimationFrame(() => {
+    _rafPending = false;
+    canvas.style.transform = `translate(${state.panX}px, ${state.panY}px) scale(${state.zoom})`;
+    statusZoom.textContent = Math.round(state.zoom * 100) + '%';
+    updateMinimap();
+  });
 }
 
 function screenToCanvas(sx, sy) {
@@ -1097,6 +1178,81 @@ document.getElementById('help-close-btn').addEventListener('click', hideHelp);
 document.getElementById('help-overlay').addEventListener('click', e => {
   if (e.target === document.getElementById('help-overlay')) hideHelp();
 });
+
+// ==================== RESET ====================
+let resetStep = 0; // 0 = idle, 1 = first confirm shown, 2 = second confirm shown
+
+function showResetOverlay() {
+  resetStep = 1;
+  document.getElementById('reset-title').textContent = 'Reset Canvas?';
+  document.getElementById('reset-msg').innerHTML = 'This will <strong>permanently delete</strong> all blocks, connections, and saved data. This cannot be undone.';
+  document.getElementById('reset-confirm').textContent = 'Yes, delete everything';
+  document.getElementById('reset-overlay').classList.add('visible');
+}
+
+function hideResetOverlay() {
+  resetStep = 0;
+  document.getElementById('reset-overlay').classList.remove('visible');
+}
+
+document.getElementById('btn-reset').addEventListener('click', showResetOverlay);
+
+document.getElementById('reset-cancel').addEventListener('click', hideResetOverlay);
+
+document.getElementById('reset-confirm').addEventListener('click', () => {
+  if (resetStep === 1) {
+    // Step 2: ask again, harder
+    resetStep = 2;
+    document.getElementById('reset-title').textContent = 'Are you absolutely sure?';
+    document.getElementById('reset-msg').innerHTML = 'You are about to <strong>erase everything</strong>. Every block, every connection, all saved data — gone permanently. There is no undo.';
+    document.getElementById('reset-confirm').textContent = 'Yes, I\'m sure — wipe it all';
+    // Shake the card to signal "this is serious"
+    const card = document.getElementById('reset-card');
+    card.classList.remove('shake');
+    void card.offsetWidth; // reflow to restart animation
+    card.classList.add('shake');
+  } else if (resetStep === 2) {
+    // Actually reset
+    hideResetOverlay();
+    hardReset();
+  }
+});
+
+document.getElementById('reset-overlay').addEventListener('click', e => {
+  if (e.target === document.getElementById('reset-overlay')) hideResetOverlay();
+});
+
+function hardReset() {
+  // Wipe localStorage
+  localStorage.removeItem('cccanvas-data');
+  // Clear all DOM blocks
+  canvas.querySelectorAll('.block').forEach(el => el.remove());
+  svg.innerHTML = '';
+  // Reset state
+  state.blocks = [];
+  state.connections = [];
+  state.nextId = 1;
+  state.zoom = 1;
+  state.panX = 0;
+  state.panY = 0;
+  state.selected = null;
+  state.selectedConn = null;
+  state.connectFrom = null;
+  state.dragging = null;
+  state.panning = false;
+  state.resizing = null;
+  state.pinch = null;
+  state.dirty = false;
+  state.addMode = false;
+  activePointers.clear();
+  canvasWrap.classList.remove('panning', 'mode-add', 'mode-connect');
+  document.getElementById('btn-add').classList.remove('add-active');
+  document.getElementById('btn-connect').classList.remove('active');
+  saveDot.className = '';
+  applyTransform();
+  updateStatus();
+  showToast('Canvas wiped clean.');
+}
 
 // ==================== THEME ====================
 function toggleTheme() {
