@@ -152,7 +152,8 @@
   /* BLOCKS */
   .block {
     position: absolute;
-    min-width: 180px; max-width: 380px;
+    min-width: 120px;
+    min-height: 80px;
     background: var(--block-bg);
     border: 1px solid var(--block-border);
     border-radius: var(--radius);
@@ -160,6 +161,7 @@
     transition: border-color var(--transition), box-shadow var(--transition), background var(--transition);
     cursor: default;
     will-change: transform;
+    overflow: hidden;
   }
   .block:hover { border-color: var(--border2); }
   .block.selected { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(124,106,247,0.18), var(--block-shadow); }
@@ -170,6 +172,7 @@
     padding: 8px 10px 6px;
     cursor: grab;
     border-radius: var(--radius) var(--radius) 0 0;
+    flex-shrink: 0;
   }
   .block-header:active { cursor: grabbing; }
   .block-dots { display: flex; gap: 4px; }
@@ -184,27 +187,51 @@
   }
   .block-body {
     padding: 4px 10px 10px;
+    display: flex; flex-direction: column;
+    overflow: hidden;
   }
   .block-textarea {
-    width: 100%; min-height: 60px;
+    width: 100%;
     background: transparent; border: none; outline: none;
     color: var(--text); font-family: var(--font-mono);
     font-size: 13px; line-height: 1.6; resize: none;
     caret-color: var(--accent);
     user-select: text; -webkit-user-select: text;
     cursor: text;
+    overflow: hidden;
+    white-space: pre;        /* no wrap until Enter */
+    word-break: normal;
+    overflow-wrap: normal;
+  }
+  .block-textarea.has-newline {
+    white-space: pre-wrap;   /* wrap after first Enter */
+    word-break: break-word;
+    overflow-wrap: break-word;
   }
   .block-textarea::placeholder { color: var(--text2); }
-  .block-resize {
+
+  /* Resize handles */
+  .block-resize-r {
+    position: absolute; top: 8px; right: -5px; bottom: 8px;
+    width: 10px; cursor: e-resize;
+    z-index: 10;
+  }
+  .block-resize-b {
+    position: absolute; left: 8px; right: 8px; bottom: -5px;
+    height: 10px; cursor: s-resize;
+    z-index: 10;
+  }
+  .block-resize-br {
     position: absolute; bottom: 0; right: 0;
-    width: 14px; height: 14px; cursor: se-resize;
+    width: 18px; height: 18px; cursor: se-resize;
+    z-index: 11;
     opacity: 0; transition: opacity 0.2s;
   }
-  .block:hover .block-resize { opacity: 0.4; }
-  .block-resize::after {
+  .block:hover .block-resize-br { opacity: 0.5; }
+  .block-resize-br::after {
     content: '';
     position: absolute; bottom: 3px; right: 3px;
-    width: 8px; height: 8px;
+    width: 9px; height: 9px;
     border-right: 1.5px solid var(--text2);
     border-bottom: 1.5px solid var(--text2);
     border-radius: 1px;
@@ -608,7 +635,7 @@ function screenToCanvas(sx, sy) {
 // ==================== BLOCKS ====================
 function createBlock(x, y, content = '') {
   const id = 'b' + (state.nextId++);
-  const block = { id, x, y, w: 220, content, color: '' };
+  const block = { id, x, y, w: 220, h: null, manualSize: false, content, color: '' };
   state.blocks.push(block);
   renderBlock(block);
   markDirty();
@@ -628,9 +655,11 @@ function renderBlock(block) {
         <div class="block-id">${block.id}</div>
       </div>
       <div class="block-body">
-        <textarea class="block-textarea" placeholder="Write anything..." rows="3" spellcheck="false"></textarea>
+        <textarea class="block-textarea" placeholder="Write anything..." spellcheck="false"></textarea>
       </div>
-      <div class="block-resize"></div>
+      <div class="block-resize-r"></div>
+      <div class="block-resize-b"></div>
+      <div class="block-resize-br"></div>
       <div class="block-port"></div>
     `;
     canvas.appendChild(el);
@@ -639,8 +668,17 @@ function renderBlock(block) {
   el.style.left = block.x + 'px';
   el.style.top = block.y + 'px';
   el.style.width = block.w + 'px';
+  el.style.height = block.h ? block.h + 'px' : '';
+
   const ta = el.querySelector('.block-textarea');
   if (ta.value !== block.content) ta.value = block.content;
+
+  // Set wrap mode based on whether content has newlines
+  const hasNewline = block.content.includes('\n');
+  ta.classList.toggle('has-newline', hasNewline);
+
+  // Apply textarea height: fills block minus header
+  applyTextareaSize(el, block);
 
   // color
   const c = BLOCK_COLORS[block.color || ''];
@@ -648,13 +686,30 @@ function renderBlock(block) {
   return el;
 }
 
+function applyTextareaSize(el, block) {
+  const ta = el.querySelector('.block-textarea');
+  if (!ta) return;
+  const headerH = el.querySelector('.block-header').offsetHeight;
+  const bodyPadV = 14; // 4px top + 10px bottom padding in .block-body
+  if (block.h) {
+    // Manual height: textarea fills the remaining space
+    ta.style.height = Math.max(40, block.h - headerH - bodyPadV) + 'px';
+  } else {
+    // Auto height: shrink to content
+    ta.style.height = '1px';
+    ta.style.height = ta.scrollHeight + 'px';
+  }
+}
+
 function setupBlockEvents(el, id) {
   const header = el.querySelector('.block-header');
   const ta = el.querySelector('.block-textarea');
-  const resize = el.querySelector('.block-resize');
+  const resizeR  = el.querySelector('.block-resize-r');
+  const resizeB  = el.querySelector('.block-resize-b');
+  const resizeBR = el.querySelector('.block-resize-br');
   const port = el.querySelector('.block-port');
 
-  // Drag
+  // Drag block
   header.addEventListener('pointerdown', e => {
     if (state.mode === 'connect') return;
     e.stopPropagation();
@@ -670,23 +725,78 @@ function setupBlockEvents(el, id) {
     el.setPointerCapture(e.pointerId);
   });
 
-  // Textarea
+  // Textarea interaction
   ta.addEventListener('pointerdown', e => {
     e.stopPropagation();
     if (state.mode === 'connect') return;
     selectBlock(id);
   });
+
   ta.addEventListener('input', () => {
     const block = getBlock(id);
-    if (block) { block.content = ta.value; markDirty(); }
+    if (!block) return;
+    block.content = ta.value;
+    markDirty();
     autoSave();
+
+    const hasNewline = ta.value.includes('\n');
+    ta.classList.toggle('has-newline', hasNewline);
+
+    if (!block.manualSize) {
+      if (!hasNewline) {
+        // No newline yet: grow width to fit content (single line)
+        // Measure text width using a hidden span
+        const measured = measureTextWidth(ta.value || ta.placeholder, ta);
+        const padding = 20 + 2; // block-body padding left+right + border
+        const newW = Math.max(120, measured + padding + 24);
+        block.w = newW;
+        el.style.width = newW + 'px';
+        // Height: just one line
+        ta.style.height = '1px';
+        ta.style.height = ta.scrollHeight + 'px';
+        el.style.height = '';
+      } else {
+        // Has newline: fix width, grow height
+        ta.style.height = '1px';
+        ta.style.height = ta.scrollHeight + 'px';
+        el.style.height = '';
+        block.h = null;
+      }
+      renderConnections();
+    } else {
+      // Manual size: just auto-height if no explicit h
+      if (!block.h) {
+        ta.style.height = '1px';
+        ta.style.height = ta.scrollHeight + 'px';
+      }
+      renderConnections();
+    }
   });
 
-  // Resize
-  resize.addEventListener('pointerdown', e => {
+  // RIGHT resize handle
+  resizeR.addEventListener('pointerdown', e => {
     e.stopPropagation();
     const block = getBlock(id);
-    state.resizing = { blockId: id, startX: e.clientX, origW: block.w };
+    state.resizing = { blockId: id, dir: 'r', startX: e.clientX, origW: block.w };
+    block.manualSize = true;
+    el.setPointerCapture(e.pointerId);
+  });
+
+  // BOTTOM resize handle
+  resizeB.addEventListener('pointerdown', e => {
+    e.stopPropagation();
+    const block = getBlock(id);
+    state.resizing = { blockId: id, dir: 'b', startY: e.clientY, origH: el.offsetHeight };
+    block.manualSize = true;
+    el.setPointerCapture(e.pointerId);
+  });
+
+  // CORNER resize handle
+  resizeBR.addEventListener('pointerdown', e => {
+    e.stopPropagation();
+    const block = getBlock(id);
+    state.resizing = { blockId: id, dir: 'br', startX: e.clientX, startY: e.clientY, origW: block.w, origH: el.offsetHeight };
+    block.manualSize = true;
     el.setPointerCapture(e.pointerId);
   });
 
@@ -722,7 +832,7 @@ function setupBlockEvents(el, id) {
     showCtxMenu(e.clientX, e.clientY, id);
   });
 
-  // Touch context
+  // Touch context menu (long press)
   let longPress;
   el.addEventListener('touchstart', e => {
     longPress = setTimeout(() => {
@@ -732,6 +842,18 @@ function setupBlockEvents(el, id) {
   }, { passive: true });
   el.addEventListener('touchend', () => clearTimeout(longPress));
   el.addEventListener('touchmove', () => clearTimeout(longPress), { passive: true });
+}
+
+// Measure rendered text width using a temporary canvas
+let _measureCanvas;
+function measureTextWidth(text, referenceEl) {
+  if (!_measureCanvas) _measureCanvas = document.createElement('canvas');
+  const ctx = _measureCanvas.getContext('2d');
+  const style = getComputedStyle(referenceEl);
+  ctx.font = `${style.fontSize} ${style.fontFamily}`;
+  // Measure longest line
+  const lines = text.split('\n');
+  return Math.max(...lines.map(l => ctx.measureText(l).width));
 }
 
 function getBlock(id) { return state.blocks.find(b => b.id === id); }
@@ -763,6 +885,9 @@ function duplicateBlock(id) {
   if (!b) return;
   const nb = createBlock(b.x + 30, b.y + 30, b.content);
   nb.color = b.color;
+  nb.w = b.w;
+  nb.h = b.h;
+  nb.manualSize = b.manualSize;
   renderBlock(nb);
   selectBlock(nb.id);
 }
@@ -1052,13 +1177,24 @@ canvasWrap.addEventListener('pointermove', e => {
 
   // Block resize
   if (state.resizing) {
-    const { blockId, startX, origW } = state.resizing;
-    const dx = (e.clientX - startX) / state.zoom;
+    const { blockId, dir, startX, startY, origW, origH } = state.resizing;
     const block = getBlock(blockId);
-    if (block) {
-      block.w = Math.max(160, origW + dx);
-      const el = document.getElementById(blockId);
-      if (el) el.style.width = block.w + 'px';
+    const el = document.getElementById(blockId);
+    if (block && el) {
+      if (dir === 'r' || dir === 'br') {
+        const dx = (e.clientX - startX) / state.zoom;
+        block.w = Math.max(120, origW + dx);
+        el.style.width = block.w + 'px';
+        // Mark has-newline since user is manually resizing — allow wrap
+        const ta = el.querySelector('.block-textarea');
+        ta.classList.add('has-newline');
+      }
+      if (dir === 'b' || dir === 'br') {
+        const dy = (e.clientY - startY) / state.zoom;
+        block.h = Math.max(80, origH + dy);
+        el.style.height = block.h + 'px';
+        applyTextareaSize(el, block);
+      }
       renderConnections();
     }
   }
@@ -1325,7 +1461,9 @@ function exportMD() {
   md += `<!-- cccanvas:meta nextId="${state.nextId}" zoom="${state.zoom.toFixed(3)}" panX="${state.panX.toFixed(1)}" panY="${state.panY.toFixed(1)}" -->\n\n`;
 
   for (const b of state.blocks) {
-    md += `<!-- block id="${b.id}" x="${b.x.toFixed(1)}" y="${b.y.toFixed(1)}" w="${b.w}" color="${b.color || ''}" -->\n`;
+    const hAttr = b.h ? ` h="${b.h.toFixed(0)}"` : '';
+    const msAttr = b.manualSize ? ` ms="1"` : '';
+    md += `<!-- block id="${b.id}" x="${b.x.toFixed(1)}" y="${b.y.toFixed(1)}" w="${b.w}"${hAttr}${msAttr} color="${b.color || ''}" -->\n`;
     md += b.content || '';
     md += `\n<!-- /block -->\n\n`;
   }
@@ -1376,6 +1514,8 @@ function importMD(text) {
       x: parseFloat(attrs.x) || 0,
       y: parseFloat(attrs.y) || 0,
       w: parseInt(attrs.w) || 220,
+      h: attrs.h ? parseInt(attrs.h) : null,
+      manualSize: attrs.ms === '1',
       content: m[2].trim(),
       color: attrs.color || '',
     };
