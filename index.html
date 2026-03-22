@@ -68,7 +68,17 @@
     padding: 0 16px;
     z-index: 1000;
     transition: background var(--transition), border-color var(--transition);
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none; /* Firefox */
+    -ms-overflow-style: none;
+    touch-action: pan-x;
+    cursor: grab;
+    user-select: none;
+    -webkit-user-select: none;
   }
+  #toolbar:active { cursor: grabbing; }
+  #toolbar::-webkit-scrollbar { display: none; }
   .brand {
     font-family: var(--font-display);
     font-size: 18px;
@@ -101,6 +111,13 @@
     box-shadow: 0 0 0 3px rgba(124,106,247,0.25);
   }
   .tool-btn.add-active:hover { background: var(--accent2); border-color: var(--accent2); }
+  .tool-btn.connect-active {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+    box-shadow: 0 0 0 3px rgba(124,106,247,0.25);
+  }
+  .tool-btn.connect-active:hover { background: var(--accent2); border-color: var(--accent2); }
   .tool-btn svg { width: 16px; height: 16px; }
   .spacer { flex: 1; }
   #status-bar {
@@ -166,6 +183,16 @@
   .block:hover { border-color: var(--border2); }
   .block.selected { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(124,106,247,0.18), var(--block-shadow); }
   .block.connecting-source { border-color: var(--accent2); box-shadow: 0 0 0 3px rgba(124,106,247,0.28); }
+
+  /* Overflow glow — bottom border brightens + inner shadow when content is clipped */
+  .block.overflowing {
+    border-bottom-color: var(--overflow-color, var(--border2));
+    box-shadow: var(--block-shadow), 0 6px 20px -4px var(--overflow-glow, transparent), inset 0 -50px 36px -6px var(--overflow-fade, transparent);
+    transition: border-color 0.4s ease, box-shadow 0.4s ease;
+  }
+  .block.selected.overflowing {
+    box-shadow: 0 0 0 2px rgba(124,106,247,0.18), var(--block-shadow), 0 6px 20px -4px var(--overflow-glow, transparent), inset 0 -50px 36px -6px var(--overflow-fade, transparent);
+  }
 
   .block-header {
     display: flex; align-items: center; gap: 6px;
@@ -237,7 +264,37 @@
     border-radius: 1px;
   }
 
-  /* Connect ports */
+  /* Overflow indicator — smooth gradient outline on bottom half */
+  /* Uses a pseudo-element with a CSS gradient border that fades in from top */
+  .block::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: var(--radius);
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.5s ease;
+    background:
+      linear-gradient(
+        to bottom,
+        transparent 0%,
+        transparent 30%,
+        var(--overflow-color, rgba(160,153,248,0.03)) 45%,
+        var(--overflow-color, rgba(160,153,248,0.10)) 60%,
+        var(--overflow-color, rgba(160,153,248,0.30)) 74%,
+        var(--overflow-color, rgba(160,153,248,0.65)) 88%,
+        var(--overflow-color, rgba(160,153,248,1))   100%
+      ) border-box;
+    -webkit-mask:
+      linear-gradient(#fff 0 0) padding-box,
+      linear-gradient(#fff 0 0);
+    -webkit-mask-composite: destination-out;
+    mask-composite: exclude;
+    border: 1.5px solid transparent;
+  }
+  .block.overflowing::after {
+    opacity: 1;
+  }
   .block-port {
     position: absolute; top: 50%; right: -7px;
     transform: translateY(-50%);
@@ -410,11 +467,55 @@
     0%, 100% { opacity: 1; } 50% { opacity: 0.3; }
   }
 
+  /* SEARCH BAR */
+  #search-wrap {
+    position: relative;
+    display: flex; align-items: center;
+    flex: 1; max-width: 240px; min-width: 0;
+  }
+  #search-input {
+    width: 100%; height: 32px;
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 8px; padding: 0 32px 0 30px;
+    font-family: var(--font-mono); font-size: 11px;
+    color: var(--text); outline: none;
+    transition: border-color var(--transition), background var(--transition);
+    -webkit-appearance: none;
+  }
+  #search-input::placeholder { color: var(--text2); }
+  #search-input:focus { border-color: var(--accent); background: var(--surface); }
+  #search-icon {
+    position: absolute; left: 9px; top: 50%; transform: translateY(-50%);
+    width: 13px; height: 13px; color: var(--text2); pointer-events: none;
+  }
+  #search-clear {
+    position: absolute; right: 7px; top: 50%; transform: translateY(-50%);
+    width: 16px; height: 16px; border-radius: 50%;
+    background: var(--border2); border: none; cursor: pointer;
+    display: none; align-items: center; justify-content: center;
+    color: var(--text2); font-size: 10px; line-height: 1;
+    transition: background var(--transition);
+    -webkit-tap-highlight-color: transparent;
+  }
+  #search-clear.visible { display: flex; }
+  #search-clear:hover { background: var(--border); color: var(--text); }
+  #search-count {
+    position: absolute; right: 28px; top: 50%; transform: translateY(-50%);
+    font-size: 10px; color: var(--text2); pointer-events: none;
+    display: none; white-space: nowrap;
+  }
+  #search-count.visible { display: block; }
+
+  /* Cards dimmed during search */
+  .block.search-dim { opacity: 0.06; transition: opacity 0.25s ease; }
+  .block.search-match { opacity: 1; transition: opacity 0.25s ease; }
+
   /* Mobile touch */
   @media (max-width: 600px) {
     .brand { font-size: 15px; }
     #status-bar { display: none; }
     #minimap { width: 110px; height: 72px; }
+    #search-wrap { max-width: 140px; }
   }
 </style>
 </head>
@@ -438,12 +539,6 @@
   </button>
 
   <div class="toolbar-divider"></div>
-
-  <button class="tool-btn" id="btn-save" title="Save (Ctrl+S)">
-    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M3 2h8l2 2v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V2z"/><rect x="5.5" y="9" width="5" height="4"/><rect x="5.5" y="2" width="4" height="3"/>
-    </svg>
-  </button>
 
   <button class="tool-btn" id="btn-load" title="Load .md file">
     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
@@ -489,6 +584,28 @@
       <circle cx="8" cy="12.5" r="0.5" fill="currentColor" stroke="none"/>
     </svg>
   </button>
+
+  <button class="tool-btn" id="btn-undo" title="Undo (Ctrl+Z)" disabled>
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M2 6h7a4 4 0 0 1 0 8H6"/><polyline points="2 2 2 6 6 6"/>
+    </svg>
+  </button>
+  <button class="tool-btn" id="btn-redo" title="Redo (Ctrl+Y)" disabled>
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M14 6H7a4 4 0 0 0 0 8h3"/><polyline points="14 2 14 6 10 6"/>
+    </svg>
+  </button>
+
+  <div class="toolbar-divider"></div>
+
+  <div id="search-wrap">
+    <svg id="search-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+      <circle cx="6.5" cy="6.5" r="4.5"/><line x1="10" y1="10" x2="14" y2="14"/>
+    </svg>
+    <input id="search-input" type="text" placeholder="Search cards…" autocomplete="off" spellcheck="false">
+    <span id="search-count"></span>
+    <button id="search-clear" title="Clear search">✕</button>
+  </div>
 
   <div class="spacer"></div>
 
@@ -546,16 +663,17 @@
 <div id="help-overlay">
   <div class="help-card">
     <h2>CC<span>Canvas</span> — Quick Guide</h2>
-    <div class="shortcut-row"><span class="shortcut-desc">Add block</span><span><kbd>+</kbd> toggle · then tap canvas</span></div>
+    <div class="shortcut-row"><span class="shortcut-desc">Add card</span><span><kbd>+</kbd> toggle · then tap canvas</span></div>
     <div class="shortcut-row"><span class="shortcut-desc">Pan canvas</span><span>Drag canvas · <kbd>Space</kbd> + drag</span></div>
     <div class="shortcut-row"><span class="shortcut-desc">Zoom</span><span><kbd>Ctrl</kbd> + scroll · pinch</span></div>
     <div class="shortcut-row"><span class="shortcut-desc">Connect mode</span><span><kbd>C</kbd> · or toolbar button</span></div>
-    <div class="shortcut-row"><span class="shortcut-desc">Connect blocks</span><span>Click port → click port</span></div>
+    <div class="shortcut-row"><span class="shortcut-desc">Connect cards</span><span>Click port → click port</span></div>
     <div class="shortcut-row"><span class="shortcut-desc">Delete selected</span><span><kbd>Delete</kbd> / <kbd>Backspace</kbd></span></div>
+    <div class="shortcut-row"><span class="shortcut-desc">Undo / Redo</span><span><kbd>Ctrl</kbd><kbd>Z</kbd> / <kbd>Ctrl</kbd><kbd>Y</kbd></span></div>
+    <div class="shortcut-row"><span class="shortcut-desc">Search cards</span><span><kbd>Ctrl</kbd><kbd>F</kbd></span></div>
     <div class="shortcut-row"><span class="shortcut-desc">Fit all</span><span><kbd>F</kbd></span></div>
-    <div class="shortcut-row"><span class="shortcut-desc">Save</span><span><kbd>Ctrl</kbd><kbd>S</kbd> (auto-saves)</span></div>
-    <div class="shortcut-row"><span class="shortcut-desc">Export .md</span><span>Toolbar export button</span></div>
-    <div class="shortcut-row"><span class="shortcut-desc">Right-click block</span><span>Context menu</span></div>
+    <div class="shortcut-row"><span class="shortcut-desc">Export .md</span><span><kbd>Ctrl</kbd><kbd>S</kbd> (auto-saves)</span></div>
+    <div class="shortcut-row"><span class="shortcut-desc">Right-click card</span><span>Context menu</span></div>
     <button class="help-close" id="help-close-btn">Got it</button>
   </div>
 </div>
@@ -569,34 +687,38 @@
 <script>
 // ==================== STATE ====================
 const state = {
-  blocks: [],       // { id, x, y, w, content, color }
+  blocks: [],       // { id, x, y, w, h, manualSize, content, color }
   connections: [],  // { id, from, to }
   nextId: 1,
   zoom: 1,
   panX: 0,
   panY: 0,
   mode: 'select',   // 'select' | 'connect'
-  addMode: false,   // toggle: click/tap canvas to add blocks
-  pinch: null,      // { dist, midX, midY, startPanX, startPanY, startZoom }
-  selected: null,   // block id
+  addMode: false,
+  pinch: null,
+  selected: null,
   selectedConn: null,
   connectFrom: null,
-  dragging: null,   // { blockId, startX, startY, origX, origY }
+  dragging: null,
   panning: false,
   panStart: null,
   resizing: null,
   dirty: false,
   blockColors: ['', 'purple', 'green', 'orange', 'red', 'blue'],
+  undoStack: [],    // snapshots of { blocks, connections, nextId }
+  redoStack: [],
 };
 
 const BLOCK_COLORS = {
-  '':       { border: '', accent: '' },
-  'purple': { border: '#7c6af7', accent: '#7c6af7' },
-  'green':  { border: '#52c97a', accent: '#52c97a' },
-  'orange': { border: '#f0a050', accent: '#f0a050' },
-  'red':    { border: '#ff6b6b', accent: '#ff6b6b' },
-  'blue':   { border: '#60b4f7', accent: '#60b4f7' },
+  '':       { border: '', accent: '', overflow: '#a099f8', glow: 'rgba(160,153,248,0.22)' },
+  'purple': { border: '#7c6af7', accent: '#7c6af7', overflow: '#b0a6ff', glow: 'rgba(176,166,255,0.25)' },
+  'green':  { border: '#52c97a', accent: '#52c97a', overflow: '#7eeea0', glow: 'rgba(126,238,160,0.22)' },
+  'orange': { border: '#f0a050', accent: '#f0a050', overflow: '#ffc278', glow: 'rgba(255,194,120,0.22)' },
+  'red':    { border: '#ff6b6b', accent: '#ff6b6b', overflow: '#ff9b9b', glow: 'rgba(255,155,155,0.22)' },
+  'blue':   { border: '#60b4f7', accent: '#60b4f7', overflow: '#90d0ff', glow: 'rgba(144,208,255,0.22)' },
 };
+
+// Update overflow indicator on a card element — see checkOverflow() below
 
 // ==================== DOM REFS ====================
 const canvasWrap = document.getElementById('canvas-wrap');
@@ -612,7 +734,75 @@ const minimapCtx = minimapCanvas.getContext('2d');
 const minimapViewport = document.getElementById('minimap-viewport');
 const fileInput = document.getElementById('file-input');
 
-// ==================== TRANSFORM ====================
+// ==================== UNDO / REDO ====================
+const MAX_UNDO = 60;
+
+function snapshot() {
+  const s = {
+    blocks: JSON.parse(JSON.stringify(state.blocks)),
+    connections: JSON.parse(JSON.stringify(state.connections)),
+    nextId: state.nextId,
+  };
+  state.undoStack.push(s);
+  if (state.undoStack.length > MAX_UNDO) state.undoStack.shift();
+  state.redoStack = [];
+  updateUndoButtons();
+}
+
+function undo() {
+  if (!state.undoStack.length) return;
+  // Push current onto redo
+  state.redoStack.push({
+    blocks: JSON.parse(JSON.stringify(state.blocks)),
+    connections: JSON.parse(JSON.stringify(state.connections)),
+    nextId: state.nextId,
+  });
+  const s = state.undoStack.pop();
+  applySnapshot(s);
+  updateUndoButtons();
+  showToast('Undo');
+}
+
+function redo() {
+  if (!state.redoStack.length) return;
+  state.undoStack.push({
+    blocks: JSON.parse(JSON.stringify(state.blocks)),
+    connections: JSON.parse(JSON.stringify(state.connections)),
+    nextId: state.nextId,
+  });
+  const s = state.redoStack.pop();
+  applySnapshot(s);
+  updateUndoButtons();
+  showToast('Redo');
+}
+
+function applySnapshot(s) {
+  state.blocks = s.blocks;
+  state.connections = s.connections;
+  state.nextId = s.nextId;
+  state.selected = null;
+  state.selectedConn = null;
+  renderAll();
+  applyTransform();
+  updateStatus();
+  markDirty();
+}
+
+function updateUndoButtons() {
+  const u = document.getElementById('btn-undo');
+  const r = document.getElementById('btn-redo');
+  u.disabled = state.undoStack.length === 0;
+  r.disabled = state.redoStack.length === 0;
+  u.style.opacity = state.undoStack.length ? '1' : '0.3';
+  r.style.opacity = state.redoStack.length ? '1' : '0.3';
+}
+
+let _textSnapshotTimer;
+function debouncedTextSnapshot() {
+  clearTimeout(_textSnapshotTimer);
+  _textSnapshotTimer = setTimeout(snapshot, 1200);
+}
+
 let _rafPending = false;
 function applyTransform() {
   if (_rafPending) return;
@@ -634,6 +824,7 @@ function screenToCanvas(sx, sy) {
 
 // ==================== BLOCKS ====================
 function createBlock(x, y, content = '') {
+  snapshot();
   const id = 'b' + (state.nextId++);
   const block = { id, x, y, w: 220, h: null, manualSize: false, content, color: '' };
   state.blocks.push(block);
@@ -699,6 +890,31 @@ function applyTextareaSize(el, block) {
     ta.style.height = '1px';
     ta.style.height = ta.scrollHeight + 'px';
   }
+  checkOverflow(el, block);
+}
+
+// Color map for overflow glow — brighter/more vivid versions of each card color
+const OVERFLOW_COLORS = {
+  '':       { border: 'rgba(136,136,160,0.9)', glow: 'rgba(136,136,160,0.35)', fade: 'rgba(136,136,160,0.12)' },
+  'purple': { border: 'rgba(160,153,248,1)',   glow: 'rgba(124,106,247,0.5)',  fade: 'rgba(124,106,247,0.18)' },
+  'green':  { border: 'rgba(100,230,140,1)',   glow: 'rgba(82,201,122,0.5)',   fade: 'rgba(82,201,122,0.18)'  },
+  'orange': { border: 'rgba(255,185,80,1)',    glow: 'rgba(240,160,80,0.5)',   fade: 'rgba(240,160,80,0.18)'  },
+  'red':    { border: 'rgba(255,120,120,1)',   glow: 'rgba(255,107,107,0.5)',  fade: 'rgba(255,107,107,0.18)' },
+  'blue':   { border: 'rgba(100,195,255,1)',   glow: 'rgba(96,180,247,0.5)',   fade: 'rgba(96,180,247,0.18)'  },
+};
+
+function checkOverflow(el, block) {
+  const ta = el.querySelector('.block-textarea');
+  if (!ta) return;
+  // Text overflows if scrollHeight > clientHeight (only meaningful when block.h is set)
+  const isOverflowing = block.h && ta.scrollHeight > ta.clientHeight + 2;
+  el.classList.toggle('overflowing', isOverflowing);
+  if (isOverflowing) {
+    const c = OVERFLOW_COLORS[block.color || ''];
+    el.style.setProperty('--overflow-color', c.border);
+    el.style.setProperty('--overflow-glow',  c.glow);
+    el.style.setProperty('--overflow-fade',  c.fade);
+  }
 }
 
 function setupBlockEvents(el, id) {
@@ -725,11 +941,52 @@ function setupBlockEvents(el, id) {
     el.setPointerCapture(e.pointerId);
   });
 
-  // Textarea interaction
+  // Textarea — tap focuses, drag pans canvas
   ta.addEventListener('pointerdown', e => {
-    e.stopPropagation();
-    if (state.mode === 'connect') return;
-    selectBlock(id);
+    if (state.mode === 'connect') { e.stopPropagation(); return; }
+    if (e.pointerType === 'mouse') {
+      // Mouse: just select, don't interfere
+      e.stopPropagation();
+      selectBlock(id);
+      return;
+    }
+    // Touch/pen on textarea: decide tap vs drag
+    const startX = e.clientX, startY = e.clientY;
+    let moved = false;
+    let tapTimer = null;
+    let panStarted = false;
+
+    const onMove = ev => {
+      if (Math.abs(ev.clientX - startX) > 6 || Math.abs(ev.clientY - startY) > 6) {
+        moved = true;
+        clearTimeout(tapTimer);
+        if (!panStarted) {
+          panStarted = true;
+          // Hand off to canvas panning
+          activePointers.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+          state.panning = true;
+          state.panStart = { x: ev.clientX - state.panX, y: ev.clientY - state.panY };
+          state._didPan = true;
+          canvasWrap.classList.add('panning');
+          canvasWrap.setPointerCapture(ev.pointerId);
+        }
+      }
+    };
+    const onUp = ev => {
+      ta.removeEventListener('pointermove', onMove);
+      ta.removeEventListener('pointerup', onUp);
+      clearTimeout(tapTimer);
+      if (!moved) {
+        // It was a tap — focus + select
+        selectBlock(id);
+        ta.focus();
+      }
+    };
+
+    ta.addEventListener('pointermove', onMove);
+    ta.addEventListener('pointerup', onUp);
+
+    // Don't stopPropagation — let canvasWrap also see this if needed
   });
 
   ta.addEventListener('input', () => {
@@ -738,25 +995,22 @@ function setupBlockEvents(el, id) {
     block.content = ta.value;
     markDirty();
     autoSave();
+    debouncedTextSnapshot();
 
     const hasNewline = ta.value.includes('\n');
     ta.classList.toggle('has-newline', hasNewline);
 
     if (!block.manualSize) {
       if (!hasNewline) {
-        // No newline yet: grow width to fit content (single line)
-        // Measure text width using a hidden span
         const measured = measureTextWidth(ta.value || ta.placeholder, ta);
-        const padding = 20 + 2; // block-body padding left+right + border
+        const padding = 20 + 2;
         const newW = Math.max(120, measured + padding + 24);
         block.w = newW;
         el.style.width = newW + 'px';
-        // Height: just one line
         ta.style.height = '1px';
         ta.style.height = ta.scrollHeight + 'px';
         el.style.height = '';
       } else {
-        // Has newline: fix width, grow height
         ta.style.height = '1px';
         ta.style.height = ta.scrollHeight + 'px';
         el.style.height = '';
@@ -764,13 +1018,13 @@ function setupBlockEvents(el, id) {
       }
       renderConnections();
     } else {
-      // Manual size: just auto-height if no explicit h
       if (!block.h) {
         ta.style.height = '1px';
         ta.style.height = ta.scrollHeight + 'px';
       }
       renderConnections();
     }
+    checkOverflow(el, block);
   });
 
   // RIGHT resize handle
@@ -870,6 +1124,7 @@ function selectBlock(id) {
 }
 
 function deleteBlock(id) {
+  snapshot();
   state.connections = state.connections.filter(c => c.from !== id && c.to !== id);
   state.blocks = state.blocks.filter(b => b.id !== id);
   const el = document.getElementById(id);
@@ -893,11 +1148,15 @@ function duplicateBlock(id) {
 }
 
 function cycleBlockColor(id) {
+  snapshot();
   const b = getBlock(id);
   if (!b) return;
   const idx = state.blockColors.indexOf(b.color || '');
   b.color = state.blockColors[(idx + 1) % state.blockColors.length];
   renderBlock(b);
+  // Re-check overflow glow with new color
+  const el = document.getElementById(id);
+  if (el) checkOverflow(el, b);
   markDirty();
 }
 
@@ -919,6 +1178,7 @@ function finishConnect(toId) {
     (c.from === toId && c.to === state.connectFrom)
   );
   if (!exists) {
+    snapshot();
     state.connections.push({ id: 'c' + (state.nextId++), from: state.connectFrom, to: toId });
     markDirty();
   } else {
@@ -988,6 +1248,7 @@ function selectConn(id) {
 
 function deleteSelectedConn() {
   if (!state.selectedConn) return;
+  snapshot();
   state.connections = state.connections.filter(c => c.id !== state.selectedConn);
   state.selectedConn = null;
   renderConnections();
@@ -997,7 +1258,9 @@ function deleteSelectedConn() {
 // ==================== MODE ====================
 function setMode(m) {
   state.mode = m;
-  document.getElementById('btn-connect').classList.toggle('active', m === 'connect');
+  const connectBtn = document.getElementById('btn-connect');
+  connectBtn.classList.toggle('connect-active', m === 'connect');
+  connectBtn.classList.remove('active');
   canvasWrap.classList.toggle('mode-connect', m === 'connect');
   // Entering connect mode turns off add mode
   if (m === 'connect' && state.addMode) setAddMode(false);
@@ -1045,7 +1308,10 @@ document.addEventListener('keydown', e => {
     else if (state.selectedConn) deleteSelectedConn();
   }
   if (e.key === '?' || e.key === '/') showHelp();
-  if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); saveToLocalStorage(); exportMD(); }
+  if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); exportMD(); }
+  if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key === 'z') { e.preventDefault(); undo(); }
+  if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.shiftKey && e.key === 'z'))) { e.preventDefault(); redo(); }
+  if ((e.ctrlKey || e.metaKey) && e.key === 'f') { e.preventDefault(); document.getElementById('search-input').focus(); }
 });
 document.addEventListener('keyup', e => {
   if (e.code === 'Space') { spaceHeld = false; canvasWrap.style.cursor = ''; }
@@ -1188,6 +1454,7 @@ canvasWrap.addEventListener('pointermove', e => {
         // Mark has-newline since user is manually resizing — allow wrap
         const ta = el.querySelector('.block-textarea');
         ta.classList.add('has-newline');
+        checkOverflow(el, block);
       }
       if (dir === 'b' || dir === 'br') {
         const dy = (e.clientY - startY) / state.zoom;
@@ -1212,8 +1479,8 @@ canvasWrap.addEventListener('pointerup', e => {
     state.panning = false;
     canvasWrap.classList.remove('panning');
   }
-  if (state.dragging && activePointers.size === 0) { state.dragging = null; markDirty(); autoSave(); }
-  if (state.resizing && activePointers.size === 0) { state.resizing = null; markDirty(); autoSave(); }
+  if (state.dragging && activePointers.size === 0) { snapshot(); state.dragging = null; markDirty(); autoSave(); }
+  if (state.resizing && activePointers.size === 0) { snapshot(); state.resizing = null; markDirty(); autoSave(); }
 });
 
 canvasWrap.addEventListener('pointercancel', e => {
@@ -1301,10 +1568,6 @@ document.getElementById('btn-connect').addEventListener('click', () => {
   setMode(state.mode === 'connect' ? 'select' : 'connect');
 });
 
-document.getElementById('btn-save').addEventListener('click', () => {
-  saveToLocalStorage();
-  exportMD();
-});
 document.getElementById('btn-export').addEventListener('click', exportMD);
 document.getElementById('btn-load').addEventListener('click', () => fileInput.click());
 document.getElementById('btn-fit').addEventListener('click', fitAll);
@@ -1314,6 +1577,70 @@ document.getElementById('help-close-btn').addEventListener('click', hideHelp);
 document.getElementById('help-overlay').addEventListener('click', e => {
   if (e.target === document.getElementById('help-overlay')) hideHelp();
 });
+
+document.getElementById('btn-undo').addEventListener('click', undo);
+document.getElementById('btn-redo').addEventListener('click', redo);
+
+// ==================== SEARCH ====================
+const searchInput = document.getElementById('search-input');
+const searchClear = document.getElementById('search-clear');
+const searchCount = document.getElementById('search-count');
+let searchQuery = '';
+
+searchInput.addEventListener('input', () => {
+  searchQuery = searchInput.value.trim().toLowerCase();
+  searchClear.classList.toggle('visible', searchQuery.length > 0);
+  applySearch();
+});
+
+searchInput.addEventListener('keydown', e => {
+  if (e.key === 'Escape') { clearSearch(); searchInput.blur(); }
+  e.stopPropagation(); // don't trigger canvas shortcuts while typing
+});
+
+searchClear.addEventListener('click', () => { clearSearch(); searchInput.focus(); });
+
+function clearSearch() {
+  searchInput.value = '';
+  searchQuery = '';
+  searchClear.classList.remove('visible');
+  searchCount.classList.remove('visible');
+  document.querySelectorAll('.block').forEach(el => {
+    el.classList.remove('search-dim', 'search-match');
+  });
+}
+
+function applySearch() {
+  if (!searchQuery) { clearSearch(); return; }
+  let matches = 0;
+  document.querySelectorAll('.block').forEach(el => {
+    const block = getBlock(el.id);
+    if (!block) return;
+    const hit = block.content.toLowerCase().includes(searchQuery);
+    el.classList.toggle('search-dim', !hit);
+    el.classList.toggle('search-match', hit);
+    if (hit) matches++;
+  });
+  searchCount.textContent = matches + ' match' + (matches !== 1 ? 'es' : '');
+  searchCount.classList.add('visible');
+  // If matches, pan to first match
+  if (matches > 0) {
+    const first = document.querySelector('.block.search-match');
+    if (first) {
+      const block = getBlock(first.id);
+      if (block) panToBlock(block);
+    }
+  }
+}
+
+function panToBlock(block) {
+  const W = canvasWrap.offsetWidth, H = canvasWrap.offsetHeight;
+  const targetX = W / 2 - (block.x + (block.w || 220) / 2) * state.zoom;
+  const targetY = H / 2 - (block.y + 60) * state.zoom;
+  state.panX = targetX;
+  state.panY = targetY;
+  applyTransform();
+}
 
 // ==================== RESET ====================
 let resetStep = 0; // 0 = idle, 1 = first confirm shown, 2 = second confirm shown
@@ -1383,7 +1710,7 @@ function hardReset() {
   activePointers.clear();
   canvasWrap.classList.remove('panning', 'mode-add', 'mode-connect');
   document.getElementById('btn-add').classList.remove('add-active');
-  document.getElementById('btn-connect').classList.remove('active');
+  document.getElementById('btn-connect').classList.remove('active', 'connect-active');
   saveDot.className = '';
   applyTransform();
   updateStatus();
@@ -1560,6 +1887,8 @@ function renderAll() {
   svg.innerHTML = '';
   for (const b of state.blocks) renderBlock(b);
   renderConnections();
+  // Re-apply search highlighting if active
+  if (typeof searchQuery !== 'undefined' && searchQuery) applySearch();
 }
 
 // ==================== STATUS ====================
@@ -1700,6 +2029,11 @@ function boot() {
   applyTransform();
   updateStatus();
 
+  // Reset undo history on load — don't pollute stack with init snapshots
+  state.undoStack = [];
+  state.redoStack = [];
+  updateUndoButtons();
+
   // Auto-save on content changes
   setInterval(() => {
     if (state.dirty) saveToLocalStorage();
@@ -1711,6 +2045,34 @@ window.addEventListener('beforeunload', () => {
   if (state.dirty) saveToLocalStorage();
 });
 window.addEventListener('resize', () => { applyTransform(); updateMinimap(); });
+
+// ==================== TOOLBAR DRAG SCROLL ====================
+(function() {
+  const toolbar = document.getElementById('toolbar');
+  let isDragging = false;
+  let startX = 0;
+  let scrollStart = 0;
+
+  toolbar.addEventListener('pointerdown', e => {
+    // Only drag on empty toolbar space or buttons — not inputs
+    if (e.target.tagName === 'INPUT') return;
+    isDragging = true;
+    startX = e.clientX;
+    scrollStart = toolbar.scrollLeft;
+    toolbar.setPointerCapture(e.pointerId);
+    e.preventDefault();
+  }, { passive: false });
+
+  toolbar.addEventListener('pointermove', e => {
+    if (!isDragging) return;
+    const dx = startX - e.clientX;
+    toolbar.scrollLeft = scrollStart + dx;
+  });
+
+  toolbar.addEventListener('pointerup', () => { isDragging = false; });
+  toolbar.addEventListener('pointercancel', () => { isDragging = false; });
+})();
+
 </script>
 </body>
 </html>
