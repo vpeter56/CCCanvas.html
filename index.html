@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>CCCanvas</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230d0d0f'/%3E%3Crect x='4' y='4' width='11' height='11' rx='2.5' fill='none' stroke='%237c6af7' stroke-width='1.5'/%3E%3Crect x='17' y='4' width='11' height='11' rx='2.5' fill='none' stroke='%237c6af7' stroke-width='1.5'/%3E%3Crect x='4' y='17' width='11' height='11' rx='2.5' fill='none' stroke='%234a4a60' stroke-width='1.5'/%3E%3Crect x='17' y='17' width='11' height='11' rx='2.5' fill='none' stroke='%234a4a60' stroke-width='1.5'/%3E%3Cline x1='15' y1='9.5' x2='17' y2='9.5' stroke='%237c6af7' stroke-width='1.5'/%3E%3Cline x1='22.5' y1='15' x2='22.5' y2='17' stroke='%237c6af7' stroke-width='1.5'/%3E%3C/svg%3E">
 <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,600;1,9..144,300&display=swap" rel="stylesheet">
 <style>
   :root {
@@ -720,6 +721,7 @@ const state = {
   blockColors: ['', 'purple', 'green', 'orange', 'red', 'blue'],
   undoStack: [],    // snapshots of { blocks, connections, nextId }
   redoStack: [],
+  overlayPanning: false,
 };
 
 const BLOCK_COLORS = {
@@ -939,41 +941,157 @@ function setupBlockEvents(el, id) {
   const resizeBR = el.querySelector('.block-resize-br');
   const port = el.querySelector('.block-port');
 
-  // Drag block
+  // Drag block — header only
   header.addEventListener('pointerdown', e => {
     if (state.mode === 'connect') return;
     e.stopPropagation();
-    const block = getBlock(id);
+    activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+    // Second finger landed while already dragging → switch to pinch
+    if (activePointers.size >= 2) {
+      state.panning = false;
+      canvasWrap.classList.remove('panning');
+      const pts = getCanvasPointers();
+      state.pinch = {
+        dist: Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y),
+        midX: (pts[0].x + pts[1].x) / 2,
+        midY: (pts[0].y + pts[1].y) / 2 - 52,
+        startPanX: state.panX,
+        startPanY: state.panY,
+        startZoom: state.zoom,
+      };
+      header.setPointerCapture(e.pointerId);
+      return;
+    }
+
+    // Single finger — drag card using deltas (not absolute origin)
     selectBlock(id);
-    state.dragging = {
-      blockId: id,
-      startX: e.clientX,
-      startY: e.clientY,
-      origX: block.x,
-      origY: block.y,
+    header.setPointerCapture(e.pointerId);
+    const dragPointerId = e.pointerId;
+    let lastX = e.clientX;
+    let lastY = e.clientY;
+
+    const onHeaderMove = ev => {
+      if (ev.pointerId !== dragPointerId) return;
+      activePointers.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+
+      // Pinch active — handle zoom
+      if (state.pinch) {
+        const pts = getCanvasPointers();
+        if (pts.length < 2) return;
+        const newDist = Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y);
+        const newMidX = (pts[0].x + pts[1].x) / 2;
+        const newMidY = (pts[0].y + pts[1].y) / 2 - 52;
+        const scaleFactor = newDist / state.pinch.dist;
+        const newZoom = Math.min(3, Math.max(0.15, state.pinch.startZoom * scaleFactor));
+        const zf = newZoom / state.pinch.startZoom;
+        state.zoom = newZoom;
+        state.panX = state.pinch.midX - zf * (state.pinch.midX - state.pinch.startPanX) + (newMidX - state.pinch.midX);
+        state.panY = state.pinch.midY - zf * (state.pinch.midY - state.pinch.startPanY) + (newMidY - state.pinch.midY);
+        applyTransform();
+        // Keep lastX/lastY current so drag resumes correctly after pinch
+        lastX = ev.clientX;
+        lastY = ev.clientY;
+        return;
+      }
+
+      // Delta-based card drag — works correctly after any pinch/zoom
+      const dx = (ev.clientX - lastX) / state.zoom;
+      const dy = (ev.clientY - lastY) / state.zoom;
+      lastX = ev.clientX;
+      lastY = ev.clientY;
+      const b = getBlock(id);
+      if (b) {
+        b.x += dx;
+        b.y += dy;
+        el.style.left = b.x + 'px';
+        el.style.top = b.y + 'px';
+        renderConnections();
+      }
     };
-    el.setPointerCapture(e.pointerId);
+
+    const onHeaderUp = ev => {
+      activePointers.delete(ev.pointerId);
+
+      // Second finger lifted — pinch ended, resume drag seamlessly
+      if (state.pinch && activePointers.size < 2) {
+        state.pinch = null;
+        // lastX/lastY already updated during pinch, drag continues naturally
+        return;
+      }
+
+      // First finger lifted — drag done
+      if (ev.pointerId === dragPointerId) {
+        header.removeEventListener('pointermove', onHeaderMove);
+        header.removeEventListener('pointerup', onHeaderUp);
+        markDirty();
+        autoSave();
+      }
+    };
+
+    header.addEventListener('pointermove', onHeaderMove);
+    header.addEventListener('pointerup', onHeaderUp);
   });
 
   const overlay = el.querySelector('.block-touch-overlay');
 
   // Overlay intercepts all touch input on the card body
   // — drag → pan canvas, tap → dismiss overlay and focus textarea
+  // — second finger → pinch zoom
   overlay.addEventListener('pointerdown', e => {
-    if (e.pointerType === 'mouse') return; // mouse clicks go straight through
+    if (e.pointerType === 'mouse') return;
 
     e.stopPropagation();
     overlay.setPointerCapture(e.pointerId);
+    activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+    // Second finger → pinch
+    if (activePointers.size >= 2) {
+      state.overlayPanning = false;
+      state.panning = false;
+      canvasWrap.classList.remove('panning');
+      const pts = getCanvasPointers();
+      state.pinch = {
+        dist: Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y),
+        midX: (pts[0].x + pts[1].x) / 2,
+        midY: (pts[0].y + pts[1].y) / 2 - 52,
+        startPanX: state.panX,
+        startPanY: state.panY,
+        startZoom: state.zoom,
+      };
+      return;
+    }
 
     const startX = e.clientX, startY = e.clientY;
     let lastX = startX, lastY = startY;
     let moved = false;
+    state.overlayPanning = false;
 
     const onMove = ev => {
+      activePointers.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+
+      // Pinch active — run zoom
+      if (state.pinch) {
+        const pts = getCanvasPointers();
+        if (pts.length < 2) return;
+        const newDist = Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y);
+        const newMidX = (pts[0].x + pts[1].x) / 2;
+        const newMidY = (pts[0].y + pts[1].y) / 2 - 52;
+        const scaleFactor = newDist / state.pinch.dist;
+        const newZoom = Math.min(3, Math.max(0.15, state.pinch.startZoom * scaleFactor));
+        const zf = newZoom / state.pinch.startZoom;
+        state.zoom = newZoom;
+        state.panX = state.pinch.midX - zf * (state.pinch.midX - state.pinch.startPanX) + (newMidX - state.pinch.midX);
+        state.panY = state.pinch.midY - zf * (state.pinch.midY - state.pinch.startPanY) + (newMidY - state.pinch.midY);
+        applyTransform();
+        return;
+      }
+
       const dx = ev.clientX - lastX;
       const dy = ev.clientY - lastY;
       if (!moved && (Math.abs(ev.clientX - startX) > 5 || Math.abs(ev.clientY - startY) > 5)) {
         moved = true;
+        state.overlayPanning = true; // block canvasWrap from also panning
         state._didPan = true;
         canvasWrap.classList.add('panning');
       }
@@ -986,15 +1104,19 @@ function setupBlockEvents(el, id) {
       lastY = ev.clientY;
     };
 
-    const onUp = () => {
-      overlay.removeEventListener('pointermove', onMove);
-      overlay.removeEventListener('pointerup', onUp);
-      canvasWrap.classList.remove('panning');
-      if (!moved) {
-        // Tap — enter edit mode: hide overlay, focus textarea
-        selectBlock(id);
-        el.classList.add('editing');
-        ta.focus();
+    const onUp = ev => {
+      activePointers.delete(ev.pointerId);
+      if (activePointers.size < 2) state.pinch = null;
+      if (activePointers.size === 0) {
+        state.overlayPanning = false;
+        overlay.removeEventListener('pointermove', onMove);
+        overlay.removeEventListener('pointerup', onUp);
+        canvasWrap.classList.remove('panning');
+        if (!moved) {
+          selectBlock(id);
+          el.classList.add('editing');
+          ta.focus();
+        }
       }
     };
 
@@ -1448,8 +1570,8 @@ canvasWrap.addEventListener('pointermove', e => {
     return;
   }
 
-  // Single-finger pan
-  if (state.panning) {
+  // Single-finger pan — skip if overlay is already handling it
+  if (state.panning && !state.overlayPanning) {
     const newX = e.clientX - state.panStart.x;
     const newY = e.clientY - state.panStart.y;
     if (Math.abs(newX - state.panX) > 3 || Math.abs(newY - state.panY) > 3) state._didPan = true;
@@ -1504,9 +1626,13 @@ canvasWrap.addEventListener('pointermove', e => {
 canvasWrap.addEventListener('pointerup', e => {
   activePointers.delete(e.pointerId);
 
-  // If we go back to one finger, reset pinch (don't restart pan)
   if (activePointers.size < 2) {
     state.pinch = null;
+  }
+
+  if (state.panning && activePointers.size === 0) {
+    state.panning = false;
+    canvasWrap.classList.remove('panning');
   }
 
   if (state.panning && activePointers.size === 0) {
