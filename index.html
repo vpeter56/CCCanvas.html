@@ -94,6 +94,13 @@
     color: var(--text);
   }
   .tool-btn.active { color: var(--accent); border-color: var(--accent); }
+  .tool-btn.add-active {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+    box-shadow: 0 0 0 3px rgba(124,106,247,0.25);
+  }
+  .tool-btn.add-active:hover { background: var(--accent2); border-color: var(--accent2); }
   .tool-btn svg { width: 16px; height: 16px; }
   .spacer { flex: 1; }
   #status-bar {
@@ -111,6 +118,7 @@
     overflow: hidden; cursor: default;
   }
   #canvas-wrap.mode-connect { cursor: crosshair; }
+  #canvas-wrap.mode-add { cursor: cell; }
   #canvas-wrap.panning { cursor: grabbing; }
 
   #canvas {
@@ -436,8 +444,8 @@
 <div id="help-overlay">
   <div class="help-card">
     <h2>CC<span>Canvas</span> — Quick Guide</h2>
-    <div class="shortcut-row"><span class="shortcut-desc">Add block</span><span><kbd>Double-click</kbd> canvas</span></div>
-    <div class="shortcut-row"><span class="shortcut-desc">Pan canvas</span><span><kbd>Space</kbd> + drag · middle-click</span></div>
+    <div class="shortcut-row"><span class="shortcut-desc">Add block</span><span><kbd>+</kbd> toggle · then tap canvas</span></div>
+    <div class="shortcut-row"><span class="shortcut-desc">Pan canvas</span><span>Drag canvas · <kbd>Space</kbd> + drag</span></div>
     <div class="shortcut-row"><span class="shortcut-desc">Zoom</span><span><kbd>Ctrl</kbd> + scroll · pinch</span></div>
     <div class="shortcut-row"><span class="shortcut-desc">Connect mode</span><span><kbd>C</kbd> · or toolbar button</span></div>
     <div class="shortcut-row"><span class="shortcut-desc">Connect blocks</span><span>Click port → click port</span></div>
@@ -466,6 +474,7 @@ const state = {
   panX: 0,
   panY: 0,
   mode: 'select',   // 'select' | 'connect'
+  addMode: false,   // toggle: click/tap canvas to add blocks
   selected: null,   // block id
   selectedConn: null,
   connectFrom: null,
@@ -783,11 +792,26 @@ function setMode(m) {
   state.mode = m;
   document.getElementById('btn-connect').classList.toggle('active', m === 'connect');
   canvasWrap.classList.toggle('mode-connect', m === 'connect');
+  // Entering connect mode turns off add mode
+  if (m === 'connect' && state.addMode) setAddMode(false);
+}
+
+function setAddMode(on) {
+  state.addMode = on;
+  const btn = document.getElementById('btn-add');
+  btn.classList.toggle('add-active', on);
+  canvasWrap.classList.toggle('mode-add', on);
+  if (on) {
+    // Turn off connect mode when add mode is on
+    if (state.mode === 'connect') setMode('select');
+    showToast('Add mode on — tap canvas to add notes');
+  }
 }
 
 // ==================== CANVAS EVENTS ====================
-// Double-click to add block
+// Double-click to add block (only when not in add-mode toggle)
 canvasWrap.addEventListener('dblclick', e => {
+  if (state.addMode) return; // add mode uses single tap/click instead
   if (e.target !== canvasWrap && e.target !== canvas && !e.target.closest('#connections-svg')) return;
   const pos = screenToCanvas(e.clientX, e.clientY);
   const b = createBlock(pos.x - 110, pos.y - 40);
@@ -821,21 +845,58 @@ document.addEventListener('keyup', e => {
 });
 
 // Pointer events for pan & drag
+// On touch (tablet): single finger pans. On mouse: left-drag on empty canvas pans.
 canvasWrap.addEventListener('pointerdown', e => {
+  // Middle-click or space+drag always pan
   if (e.button === 1 || spaceHeld || e.altKey) {
     state.panning = true;
     state.panStart = { x: e.clientX - state.panX, y: e.clientY - state.panY };
+    state._didPan = false;
     canvasWrap.setPointerCapture(e.pointerId);
     canvasWrap.classList.add('panning');
     e.preventDefault();
     return;
   }
+
+  // Touch (pointerType touch/pen): single-finger pan when not on a block
+  if ((e.pointerType === 'touch' || e.pointerType === 'pen') && e.isPrimary) {
+    const onBlock = e.target.closest('.block');
+    if (!onBlock && e.target !== canvasWrap && e.target !== canvas && !e.target.closest('#connections-svg')) return;
+    if (onBlock) return; // block handles its own drag
+    // start pan
+    state.panning = true;
+    state.panStart = { x: e.clientX - state.panX, y: e.clientY - state.panY };
+    state._panMoved = false;
+    state._didPan = false;
+    canvasWrap.setPointerCapture(e.pointerId);
+    canvasWrap.classList.add('panning');
+    return;
+  }
+
+  // Mouse left-click on empty canvas (not on a block) — pan
+  if (e.button === 0 && e.pointerType === 'mouse') {
+    const onBlock = e.target.closest('.block');
+    if (onBlock) return;
+    if (e.target === canvasWrap || e.target === canvas || e.target.closest('#connections-svg')) {
+      if (state.addMode || state.mode === 'connect') return; // don't pan in add/connect mode, handle via click
+      state.panning = true;
+      state.panStart = { x: e.clientX - state.panX, y: e.clientY - state.panY };
+      state._panMoved = false;
+      state._didPan = false;
+      canvasWrap.setPointerCapture(e.pointerId);
+      canvasWrap.classList.add('panning');
+    }
+  }
 });
 
 canvasWrap.addEventListener('pointermove', e => {
   if (state.panning) {
-    state.panX = e.clientX - state.panStart.x;
-    state.panY = e.clientY - state.panStart.y;
+    const newX = e.clientX - state.panStart.x;
+    const newY = e.clientY - state.panStart.y;
+    const moved = Math.abs(newX - state.panX) > 3 || Math.abs(newY - state.panY) > 3;
+    if (moved) { state._panMoved = true; state._didPan = true; }
+    state.panX = newX;
+    state.panY = newY;
     applyTransform();
     return;
   }
@@ -888,7 +949,7 @@ canvasWrap.addEventListener('wheel', e => {
   }
 }, { passive: false });
 
-// Pinch zoom (touch)
+// Pinch zoom (touch) - two finger
 let lastPinchDist = null;
 canvasWrap.addEventListener('touchstart', e => {
   if (e.touches.length === 2) {
@@ -923,9 +984,17 @@ function zoomAt(mx, my, delta) {
   applyTransform();
 }
 
-// Click on empty canvas - deselect
+// Click on empty canvas - deselect / add block in add-mode
 canvasWrap.addEventListener('click', e => {
-  if (e.target === canvasWrap || e.target === canvas) {
+  if (e.target === canvasWrap || e.target === canvas || e.target.closest('#connections-svg')) {
+    if (state.addMode && (e.target === canvasWrap || e.target === canvas || e.target.closest('#connections-svg'))) {
+      // Don't add if this click was the end of a pan gesture
+      if (state._didPan) { state._didPan = false; return; }
+      const pos = screenToCanvas(e.clientX, e.clientY);
+      const b = createBlock(pos.x - 110, pos.y - 40);
+      setTimeout(() => document.getElementById(b.id)?.querySelector('.block-textarea')?.focus(), 50);
+      return;
+    }
     selectBlock(null);
     state.selectedConn = null;
     document.querySelectorAll('.connection-line').forEach(l => l.classList.remove('selected'));
@@ -957,9 +1026,7 @@ document.addEventListener('contextmenu', e => {
 
 // ==================== TOOLBAR ====================
 document.getElementById('btn-add').addEventListener('click', () => {
-  const pos = screenToCanvas(window.innerWidth / 2, window.innerHeight / 2);
-  const b = createBlock(pos.x - 110, pos.y - 40);
-  setTimeout(() => document.getElementById(b.id)?.querySelector('.block-textarea')?.focus(), 50);
+  setAddMode(!state.addMode);
 });
 
 document.getElementById('btn-connect').addEventListener('click', () => {
@@ -1266,7 +1333,7 @@ function boot() {
 
   if (!loaded) {
     // Welcome blocks
-    const b1 = createBlock(120, 100, 'Welcome to CCCanvas ✦\n\nDouble-click anywhere to add a block.');
+    const b1 = createBlock(120, 100, 'Welcome to CCCanvas ✦\n\nTap the + button to toggle add mode, then tap anywhere to add a block.');
     const b2 = createBlock(460, 100, 'Connect blocks by pressing C or clicking the ○ port on a block.');
     const b3 = createBlock(280, 280, 'Everything saves automatically. Export as .md to sync across devices.');
     b1.w = 280; b2.w = 260; b3.w = 300;
