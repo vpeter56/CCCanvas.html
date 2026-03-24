@@ -183,6 +183,10 @@
   }
   .block:hover { border-color: var(--border2); }
   .block.selected { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(124,106,247,0.18), var(--block-shadow); }
+  .block.multi-selected {
+    border-color: #52c97a;
+    box-shadow: 0 0 0 2px rgba(82,201,122,0.22), var(--block-shadow);
+  }
   .block.connecting-source { border-color: var(--accent2); box-shadow: 0 0 0 3px rgba(124,106,247,0.28); }
 
   /* Overflow glow — bottom border brightens + inner shadow when content is clipped */
@@ -550,6 +554,13 @@
     </svg>
   </button>
 
+  <button class="tool-btn" id="btn-multiselect" title="Multi-select mode">
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="1" y="1" width="6" height="6" rx="1.5"/><rect x="9" y="1" width="6" height="6" rx="1.5"/>
+      <rect x="1" y="9" width="6" height="6" rx="1.5"/><rect x="9" y="9" width="6" height="6" rx="1.5"/>
+    </svg>
+  </button>
+
   <button class="tool-btn" id="btn-connect" title="Connect mode (C)">
     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
       <circle cx="3" cy="8" r="2"/><circle cx="13" cy="8" r="2"/><line x1="5" y1="8" x2="11" y2="8"/>
@@ -561,6 +572,12 @@
   <button class="tool-btn" id="btn-load" title="Load .md file">
     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
       <path d="M3 2h6l4 4v8a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V3z"/><polyline points="9 2 9 6 13 6"/><line x1="8" y1="9" x2="8" y2="13"/><line x1="6" y1="11" x2="10" y2="11"/>
+    </svg>
+  </button>
+
+  <button class="tool-btn" id="btn-merge" title="Merge .md file into current canvas">
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M3 8h4m6 0h-4m0 0V4m0 4v4"/><circle cx="7" cy="8" r="1.5" fill="currentColor" stroke="none"/><circle cx="12" cy="8" r="1.5" fill="currentColor" stroke="none"/>
     </svg>
   </button>
 
@@ -640,6 +657,7 @@
     <svg id="connections-svg"></svg>
   </div>
 </div>
+<canvas id="beacon-canvas" style="position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:50;"></canvas>
 
 <!-- MINIMAP -->
 <div id="minimap">
@@ -658,9 +676,13 @@
     Cycle color
   </div>
   <div class="ctx-sep"></div>
+  <div class="ctx-item danger" id="ctx-delete-selected" style="display:none">
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 5 13 5"/><path d="M5 5V3h6v2"/><path d="M6 7l.5 6M10 7l-.5 6M4 5l.7 8.5a1 1 0 0 0 1 .5h4.6a1 1 0 0 0 1-.5L12 5"/></svg>
+    Delete selected
+  </div>
   <div class="ctx-item danger" id="ctx-delete">
     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 5 13 5"/><path d="M5 5V3h6v2"/><path d="M6 7l.5 6M10 7l-.5 6M4 5l.7 8.5a1 1 0 0 0 1 .5h4.6a1 1 0 0 0 1-.5L12 5"/></svg>
-    Delete block
+    Delete card
   </div>
 </div>
 
@@ -704,6 +726,7 @@
 
 <!-- HIDDEN FILE INPUT -->
 <input type="file" id="file-input" accept=".md" style="display:none">
+<input type="file" id="merge-input" accept=".md" style="display:none">
 
 <!-- TOAST -->
 <div id="toast"></div>
@@ -732,6 +755,8 @@ const state = {
   undoStack: [],    // snapshots of { blocks, connections, nextId }
   redoStack: [],
   overlayPanning: false,
+  multiSelectMode: false,  // long-tap canvas activates this
+  multiSelected: new Set(), // set of block ids
 };
 
 const BLOCK_COLORS = {
@@ -742,6 +767,117 @@ const BLOCK_COLORS = {
   'red':    { border: '#ff6b6b', accent: '#ff6b6b', overflow: '#ff9b9b', glow: 'rgba(255,155,155,0.22)' },
   'blue':   { border: '#60b4f7', accent: '#60b4f7', overflow: '#90d0ff', glow: 'rgba(144,208,255,0.22)' },
 };
+
+// ==================== BEACONS ====================
+// Draws soft glows on the viewport edge indicating off-screen cards.
+// Colors match card color; colorless cards use a neutral dim white.
+// Multiple cards in the same direction blend/accumulate (capped low opacity).
+
+const beaconCv = document.getElementById('beacon-canvas');
+const beaconCtx = beaconCv.getContext('2d');
+
+// Raw RGB values per color key for beacon rendering
+const BEACON_COLORS = {
+  '':       [200, 200, 210],
+  'purple': [124, 106, 247],
+  'green':  [ 82, 201, 122],
+  'orange': [240, 160,  80],
+  'red':    [255, 107, 107],
+  'blue':   [ 96, 180, 247],
+};
+
+function resizeBeaconCanvas() {
+  beaconCv.width  = window.innerWidth;
+  beaconCv.height = window.innerHeight;
+}
+resizeBeaconCanvas();
+window.addEventListener('resize', () => { resizeBeaconCanvas(); updateBeacons(); });
+
+function updateBeacons() {
+  const W = beaconCv.width;
+  const H = beaconCv.height;
+  beaconCtx.clearRect(0, 0, W, H);
+
+  const toolbarH = 52; // toolbar offset used in screenToCanvas
+  const cx = W / 2;
+  const cy = (H - toolbarH) / 2 + toolbarH;
+
+  // Accumulator: angle (rad) → { r, g, b, weight }
+  // We'll render as individual soft spots on the border
+  const spots = [];
+
+  for (const b of state.blocks) {
+    // Card center in screen coords
+    const sx = b.x * state.zoom + state.panX + (b.w * state.zoom) / 2;
+    const sy = b.y * state.zoom + state.panY + toolbarH + ((b.h || 120) * state.zoom) / 2;
+
+    // Is the card fully visible? (with small margin)
+    const margin = 20;
+    const cardLeft   = b.x * state.zoom + state.panX;
+    const cardRight  = cardLeft + b.w * state.zoom;
+    const cardTop    = b.y * state.zoom + state.panY + toolbarH;
+    const cardBottom = cardTop + (b.h || 120) * state.zoom;
+
+    const fullyVisible =
+      cardRight  > margin &&
+      cardLeft   < W - margin &&
+      cardBottom > toolbarH + margin &&
+      cardTop    < H - margin;
+
+    if (fullyVisible) continue;
+
+    // Angle from screen center to card center
+    const angle = Math.atan2(sy - cy, sx - cx);
+
+    // Distance factor: farther away → slightly more weight, but capped
+    const dist = Math.hypot(sx - cx, sy - cy);
+    const weight = Math.min(1, 0.3 + dist / (Math.max(W, H) * 1.5));
+
+    const [r, g, b_] = BEACON_COLORS[b.color || ''];
+    spots.push({ angle, r, g, b: b_, weight });
+  }
+
+  if (spots.length === 0) return;
+
+  // For each spot, paint a soft radial glow along the viewport border
+  const edgeR = 80;    // spread radius of each spot along the edge (px)
+  const glowW = 28;    // inward glow depth (px)
+  const maxAlpha = 0.18; // absolute max opacity per spot — keep it subtle
+
+  for (const spot of spots) {
+    // Find the point on the viewport border in the direction of `angle`
+    const { ex, ey } = angleToEdgePoint(spot.angle, W, H, toolbarH);
+
+    // Radial gradient centred on the edge point, fading inward
+    const grd = beaconCtx.createRadialGradient(ex, ey, 0, ex, ey, glowW + edgeR * 0.5);
+    const alpha = maxAlpha * spot.weight;
+    grd.addColorStop(0,   `rgba(${spot.r},${spot.g},${spot.b},${alpha.toFixed(3)})`);
+    grd.addColorStop(0.5, `rgba(${spot.r},${spot.g},${spot.b},${(alpha * 0.4).toFixed(3)})`);
+    grd.addColorStop(1,   `rgba(${spot.r},${spot.g},${spot.b},0)`);
+
+    beaconCtx.beginPath();
+    beaconCtx.arc(ex, ey, glowW + edgeR * 0.5, 0, Math.PI * 2);
+    beaconCtx.fillStyle = grd;
+    beaconCtx.fill();
+  }
+}
+
+function angleToEdgePoint(angle, W, H, toolbarH) {
+  // Find where a ray from screen centre at `angle` hits the viewport border
+  const cx = W / 2;
+  const cy = (H - toolbarH) / 2 + toolbarH;
+  const cos = Math.cos(angle);
+  const sin = Math.sin(angle);
+
+  // Distances to each edge from centre
+  const tRight  = cos > 0  ? (W - cx) / cos           : Infinity;
+  const tLeft   = cos < 0  ? -cx / cos                 : Infinity;
+  const tBottom = sin > 0  ? (H - cy) / sin            : Infinity;
+  const tTop    = sin < 0  ? (toolbarH - cy) / sin     : Infinity;
+
+  const t = Math.min(tRight, tLeft, tBottom, tTop);
+  return { ex: cx + cos * t, ey: cy + sin * t };
+}
 
 // Update overflow indicator on a card element — see checkOverflow() below
 
@@ -837,6 +973,7 @@ function applyTransform() {
     canvas.style.transform = `translate(${state.panX}px, ${state.panY}px) scale(${state.zoom})`;
     statusZoom.textContent = Math.round(state.zoom * 100) + '%';
     updateMinimap();
+    updateBeacons();
   });
 }
 
@@ -954,7 +1091,76 @@ function setupBlockEvents(el, id) {
   // Drag block — header only
   header.addEventListener('pointerdown', e => {
     if (state.mode === 'connect') return;
+    // First finger already panning canvas — don't disrupt it
+    if (state.panning || state.overlayPanning) return;
     e.stopPropagation();
+
+    // Multi-select mode: tap → toggle select, drag → move all selected cards
+    if (state.multiSelectMode) {
+      // First finger already panning canvas — don't intercept with card drag
+      if (state.panning || state.overlayPanning) return;
+      activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      header.setPointerCapture(e.pointerId);
+      const msDragId = e.pointerId;
+      const msStartX = e.clientX, msStartY = e.clientY;
+      let msLastX = msStartX, msLastY = msStartY;
+      let msMoved = false;
+      let msPinching = false; // second finger is down
+
+      const msLong = setTimeout(() => {
+        if (!msMoved) showCtxMenu(msLastX, msLastY, id);
+      }, 500);
+
+      const msMove = ev => {
+        if (ev.pointerId !== msDragId) return;
+        activePointers.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+        if (activePointers.size >= 2) {
+          // Second finger down — pause card drag, sync position for when it lifts
+          msPinching = true;
+          clearTimeout(msLong);
+          msLastX = ev.clientX; msLastY = ev.clientY;
+          return;
+        }
+        // Second finger lifted — resume drag from current position
+        if (msPinching) {
+          msPinching = false;
+          msLastX = ev.clientX; msLastY = ev.clientY;
+          return;
+        }
+        if (!msMoved && (Math.abs(ev.clientX - msStartX) > 5 || Math.abs(ev.clientY - msStartY) > 5)) {
+          msMoved = true; clearTimeout(msLong);
+        }
+        if (!msMoved) return;
+        const dx = (ev.clientX - msLastX) / state.zoom;
+        const dy = (ev.clientY - msLastY) / state.zoom;
+        msLastX = ev.clientX; msLastY = ev.clientY;
+        const b = getBlock(id);
+        if (b) { b.x += dx; b.y += dy; const el2 = document.getElementById(id); if (el2) { el2.style.left = b.x + 'px'; el2.style.top = b.y + 'px'; } }
+        if (state.multiSelected.has(id)) {
+          for (const sid of state.multiSelected) {
+            if (sid === id) continue;
+            const sb = getBlock(sid); const sel = document.getElementById(sid);
+            if (sb && sel) { sb.x += dx; sb.y += dy; sel.style.left = sb.x + 'px'; sel.style.top = sb.y + 'px'; }
+          }
+        }
+        renderConnections();
+      };
+
+      const msUp = ev => {
+        if (ev.pointerId !== msDragId) return;
+        clearTimeout(msLong);
+        activePointers.delete(ev.pointerId);
+        header.removeEventListener('pointermove', msMove);
+        header.removeEventListener('pointerup', msUp);
+        if (msMoved) { markDirty(); autoSave(); }
+        else if (!msPinching) { toggleMultiSelect(id); }
+      };
+
+      header.addEventListener('pointermove', msMove);
+      header.addEventListener('pointerup', msUp);
+      return;
+    }
+
     activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
     // Second finger landed while already dragging → switch to pinch
@@ -974,12 +1180,18 @@ function setupBlockEvents(el, id) {
       return;
     }
 
-    // Single finger — drag card using deltas (not absolute origin)
+    // Single finger — long press → context menu, drag → move card(s)
     selectBlock(id);
     header.setPointerCapture(e.pointerId);
     const dragPointerId = e.pointerId;
     let lastX = e.clientX;
     let lastY = e.clientY;
+    let didMove = false;
+
+    // Long press on header → context menu
+    const headerLongPress = setTimeout(() => {
+      if (!didMove) showCtxMenu(lastX, lastY, id);
+    }, 500);
 
     const onHeaderMove = ev => {
       if (ev.pointerId !== dragPointerId) return;
@@ -999,43 +1211,53 @@ function setupBlockEvents(el, id) {
         state.panX = state.pinch.midX - zf * (state.pinch.midX - state.pinch.startPanX) + (newMidX - state.pinch.midX);
         state.panY = state.pinch.midY - zf * (state.pinch.midY - state.pinch.startPanY) + (newMidY - state.pinch.midY);
         applyTransform();
-        // Keep lastX/lastY current so drag resumes correctly after pinch
         lastX = ev.clientX;
         lastY = ev.clientY;
         return;
       }
 
-      // Delta-based card drag — works correctly after any pinch/zoom
       const dx = (ev.clientX - lastX) / state.zoom;
       const dy = (ev.clientY - lastY) / state.zoom;
+      if (Math.abs(ev.clientX - lastX) > 3 || Math.abs(ev.clientY - lastY) > 3) {
+        if (!didMove) { didMove = true; clearTimeout(headerLongPress); }
+      }
       lastX = ev.clientX;
       lastY = ev.clientY;
+
+      // Move this card
       const b = getBlock(id);
       if (b) {
-        b.x += dx;
-        b.y += dy;
-        el.style.left = b.x + 'px';
-        el.style.top = b.y + 'px';
-        renderConnections();
+        b.x += dx; b.y += dy;
+        el.style.left = b.x + 'px'; el.style.top = b.y + 'px';
       }
+      // Also move any multi-selected cards — only if this card is part of the selection
+      if (state.multiSelected.has(id) && state.multiSelected.size > 0) {
+        for (const sid of state.multiSelected) {
+          if (sid === id) continue;
+          const sb = getBlock(sid);
+          const sel = document.getElementById(sid);
+          if (sb && sel) {
+            sb.x += dx; sb.y += dy;
+            sel.style.left = sb.x + 'px'; sel.style.top = sb.y + 'px';
+          }
+        }
+      }
+      renderConnections();
     };
 
     const onHeaderUp = ev => {
+      clearTimeout(headerLongPress);
       activePointers.delete(ev.pointerId);
 
-      // Second finger lifted — pinch ended, resume drag seamlessly
       if (state.pinch && activePointers.size < 2) {
         state.pinch = null;
-        // lastX/lastY already updated during pinch, drag continues naturally
         return;
       }
 
-      // First finger lifted — drag done
       if (ev.pointerId === dragPointerId) {
         header.removeEventListener('pointermove', onHeaderMove);
         header.removeEventListener('pointerup', onHeaderUp);
-        markDirty();
-        autoSave();
+        if (didMove) { markDirty(); autoSave(); }
       }
     };
 
@@ -1051,10 +1273,78 @@ function setupBlockEvents(el, id) {
   overlay.addEventListener('pointerdown', e => {
     if (e.pointerType === 'mouse') return;
 
-    // In connect mode — let events through to the card's click handler
+    // First finger already panning canvas — don't let card overlay disrupt it
+    if (state.panning || state.overlayPanning) return;
+
+    // In connect mode — connect cards
     if (state.mode === 'connect') {
       if (state.connectFrom && state.connectFrom !== id) finishConnect(id);
       else startConnect(id);
+      return;
+    }
+
+    // In multi-select mode — tap toggles selection, drag moves all selected cards
+    if (state.multiSelectMode) {
+      // First finger already panning canvas — don't intercept with card drag
+      if (state.panning || state.overlayPanning) return;
+      e.stopPropagation();
+      overlay.setPointerCapture(e.pointerId);
+      activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      const msDragId = e.pointerId;
+      const msStartX = e.clientX, msStartY = e.clientY;
+      let msLastX = msStartX, msLastY = msStartY;
+      let msMoved = false;
+      let msPinching = false;
+
+      const msLong = setTimeout(() => {
+        if (!msMoved) showCtxMenu(msLastX, msLastY, id);
+      }, 500);
+
+      const msMove = ev => {
+        if (ev.pointerId !== msDragId) return;
+        activePointers.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+        if (activePointers.size >= 2) {
+          msPinching = true;
+          clearTimeout(msLong);
+          msLastX = ev.clientX; msLastY = ev.clientY;
+          return;
+        }
+        if (msPinching) {
+          msPinching = false;
+          msLastX = ev.clientX; msLastY = ev.clientY;
+          return;
+        }
+        if (!msMoved && (Math.abs(ev.clientX - msStartX) > 5 || Math.abs(ev.clientY - msStartY) > 5)) {
+          msMoved = true; clearTimeout(msLong);
+        }
+        if (!msMoved) return;
+        const dx = (ev.clientX - msLastX) / state.zoom;
+        const dy = (ev.clientY - msLastY) / state.zoom;
+        msLastX = ev.clientX; msLastY = ev.clientY;
+        const b = getBlock(id);
+        if (b) { b.x += dx; b.y += dy; const el2 = document.getElementById(id); if (el2) { el2.style.left = b.x + 'px'; el2.style.top = b.y + 'px'; } }
+        if (state.multiSelected.has(id)) {
+          for (const sid of state.multiSelected) {
+            if (sid === id) continue;
+            const sb = getBlock(sid); const sel = document.getElementById(sid);
+            if (sb && sel) { sb.x += dx; sb.y += dy; sel.style.left = sb.x + 'px'; sel.style.top = sb.y + 'px'; }
+          }
+        }
+        renderConnections();
+      };
+
+      const msUp = ev => {
+        if (ev.pointerId !== msDragId) return;
+        clearTimeout(msLong);
+        activePointers.delete(ev.pointerId);
+        overlay.removeEventListener('pointermove', msMove);
+        overlay.removeEventListener('pointerup', msUp);
+        if (msMoved) { markDirty(); autoSave(); }
+        else if (!msPinching) { toggleMultiSelect(id); }
+      };
+
+      overlay.addEventListener('pointermove', msMove);
+      overlay.addEventListener('pointerup', msUp);
       return;
     }
 
@@ -1084,10 +1374,17 @@ function setupBlockEvents(el, id) {
     let moved = false;
     state.overlayPanning = false;
 
+    // Long press → context menu (if not moved)
+    const overlayLongPress = setTimeout(() => {
+      if (!moved) {
+        selectBlock(id);
+        showCtxMenu(startX, startY, id);
+      }
+    }, 500);
+
     const onMove = ev => {
       activePointers.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
 
-      // Pinch active — run zoom
       if (state.pinch) {
         const pts = getCanvasPointers();
         if (pts.length < 2) return;
@@ -1108,7 +1405,8 @@ function setupBlockEvents(el, id) {
       const dy = ev.clientY - lastY;
       if (!moved && (Math.abs(ev.clientX - startX) > 5 || Math.abs(ev.clientY - startY) > 5)) {
         moved = true;
-        state.overlayPanning = true; // block canvasWrap from also panning
+        clearTimeout(overlayLongPress);
+        state.overlayPanning = true;
         state._didPan = true;
         canvasWrap.classList.add('panning');
       }
@@ -1122,6 +1420,7 @@ function setupBlockEvents(el, id) {
     };
 
     const onUp = ev => {
+      clearTimeout(overlayLongPress);
       activePointers.delete(ev.pointerId);
       if (activePointers.size < 2) state.pinch = null;
       if (activePointers.size === 0) {
@@ -1130,9 +1429,14 @@ function setupBlockEvents(el, id) {
         overlay.removeEventListener('pointerup', onUp);
         canvasWrap.classList.remove('panning');
         if (!moved && state.mode !== 'connect') {
-          selectBlock(id);
-          el.classList.add('editing');
-          ta.focus();
+          // Tap on card body while cards are selected → show context menu
+          if (state.multiSelected.size > 0) {
+            showCtxMenu(startX, startY, id);
+          } else {
+            selectBlock(id);
+            el.classList.add('editing');
+            ta.focus();
+          }
         }
       }
     };
@@ -1157,6 +1461,12 @@ function setupBlockEvents(el, id) {
   // Textarea — mouse only now (touch handled by overlay)
   ta.addEventListener('pointerdown', e => {
     if (e.pointerType !== 'mouse') {
+      // In multi-select mode — block all touch on textarea, don't focus
+      if (state.multiSelectMode) {
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
       // Touch on textarea — if in connect mode, finish connect and block focus
       if (state.mode === 'connect') {
         e.preventDefault();
@@ -1254,6 +1564,7 @@ function setupBlockEvents(el, id) {
 
   // Click (select / finish connect)
   el.addEventListener('click', e => {
+    if (state.multiSelectMode) return;
     if (state.mode === 'connect' && state.connectFrom) {
       if (state.connectFrom !== id) finishConnect(id);
     } else {
@@ -1263,6 +1574,7 @@ function setupBlockEvents(el, id) {
 
   // Right-click
   el.addEventListener('contextmenu', e => {
+    if (window.getSelection().toString().length > 0) return;
     e.preventDefault();
     e.stopPropagation();
     selectBlock(id);
@@ -1304,6 +1616,53 @@ function selectBlock(id) {
     const el = document.getElementById(id);
     if (el) el.classList.add('selected');
   }
+}
+
+// ==================== MULTI-SELECT ====================
+function enterMultiSelectMode() {
+  state.multiSelectMode = true;
+  canvasWrap.classList.add('mode-multiselect');
+  document.getElementById('btn-multiselect').classList.add('add-active');
+  showToast('Multi-select — tap cards to select');
+}
+
+function exitMultiSelectMode() {
+  state.multiSelectMode = false;
+  state.multiSelected.clear();
+  canvasWrap.classList.remove('mode-multiselect');
+  document.querySelectorAll('.block.multi-selected').forEach(el => el.classList.remove('multi-selected'));
+  const btn = document.getElementById('btn-multiselect');
+  if (btn) btn.classList.remove('add-active');
+}
+
+function toggleMultiSelect(id) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  if (state.multiSelected.has(id)) {
+    state.multiSelected.delete(id);
+    el.classList.remove('multi-selected');
+  } else {
+    state.multiSelected.add(id);
+    el.classList.add('multi-selected');
+  }
+}
+
+function deleteMultiSelected() {
+  snapshot();
+  for (const id of state.multiSelected) deleteBlockSilent(id);
+  exitMultiSelectMode();
+  renderConnections();
+  markDirty();
+  updateStatus();
+}
+
+// Delete without snapshot (used in batch)
+function deleteBlockSilent(id) {
+  state.connections = state.connections.filter(c => c.from !== id && c.to !== id);
+  state.blocks = state.blocks.filter(b => b.id !== id);
+  const el = document.getElementById(id);
+  if (el) el.remove();
+  if (state.selected === id) state.selected = null;
 }
 
 function deleteBlock(id) {
@@ -1519,7 +1878,6 @@ function setAddMode(on) {
   btn.classList.toggle('add-active', on);
   canvasWrap.classList.toggle('mode-add', on);
   if (on) {
-    // Turn off connect mode when add mode is on
     if (state.mode === 'connect') setMode('select');
     showToast('Add mode on — tap canvas to add notes');
   }
@@ -1573,6 +1931,27 @@ const activePointers = new Map(); // pointerId -> {x, y}
 function getCanvasPointers() {
   return [...activePointers.values()];
 }
+
+// Capture-phase: always track ALL fingers regardless of stopPropagation from cards
+canvasWrap.addEventListener('pointerdown', e => {
+  activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  // If a second finger lands anywhere (even on a card), init pinch immediately
+  if (activePointers.size === 2 && (state.panning || state.overlayPanning)) {
+    state.panning = false;
+    state.overlayPanning = false;
+    canvasWrap.classList.remove('panning');
+    canvasWrap.setPointerCapture(e.pointerId);
+    const pts = getCanvasPointers();
+    state.pinch = {
+      dist: Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y),
+      midX: (pts[0].x + pts[1].x) / 2,
+      midY: (pts[0].y + pts[1].y) / 2 - 52,
+      startPanX: state.panX,
+      startPanY: state.panY,
+      startZoom: state.zoom,
+    };
+  }
+}, { capture: true, passive: true });
 
 canvasWrap.addEventListener('pointerdown', e => {
   activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
@@ -1770,11 +2149,11 @@ function zoomAt(mx, my, delta) {
   applyTransform();
 }
 
-// Click on empty canvas - deselect / add block in add-mode
+// Click on empty canvas - deselect / add block in add-mode / exit multi-select
 canvasWrap.addEventListener('click', e => {
   if (e.target === canvasWrap || e.target === canvas || e.target.closest('#connections-svg')) {
+    if (state.multiSelectMode) { exitMultiSelectMode(); return; }
     if (state.addMode && (e.target === canvasWrap || e.target === canvas || e.target.closest('#connections-svg'))) {
-      // Don't add if this click was the end of a pan gesture
       if (state._didPan) { state._didPan = false; return; }
       const pos = screenToCanvas(e.clientX, e.clientY);
       const b = createBlock(pos.x - 110, pos.y - 40);
@@ -1789,13 +2168,22 @@ canvasWrap.addEventListener('click', e => {
   }
 });
 
+// Long press on empty canvas → enter multi-select mode
+
+
 // ==================== CONTEXT MENU ====================
 let ctxTargetId = null;
 function showCtxMenu(x, y, blockId) {
   ctxTargetId = blockId;
   hideConnCtxMenu();
+  // Toggle multi-select items
+  const hasMulti = state.multiSelected.size > 0;
+  document.getElementById('ctx-delete-selected').style.display = hasMulti ? '' : 'none';
+  document.getElementById('ctx-delete').style.display = hasMulti ? 'none' : '';
+  document.getElementById('ctx-duplicate').style.display = hasMulti ? 'none' : '';
+  document.getElementById('ctx-color').style.display = hasMulti ? 'none' : '';
   ctxMenu.style.left = Math.min(x, window.innerWidth - 170) + 'px';
-  ctxMenu.style.top = Math.min(y, window.innerHeight - 120) + 'px';
+  ctxMenu.style.top = Math.min(y, window.innerHeight - 150) + 'px';
   ctxMenu.classList.add('visible');
 }
 function hideCtxMenu() { ctxMenu.classList.remove('visible'); }
@@ -1822,6 +2210,7 @@ document.addEventListener('click', e => {
 document.getElementById('ctx-duplicate').addEventListener('click', () => { duplicateBlock(ctxTargetId); hideCtxMenu(); });
 document.getElementById('ctx-color').addEventListener('click', () => { cycleBlockColor(ctxTargetId); hideCtxMenu(); });
 document.getElementById('ctx-delete').addEventListener('click', () => { deleteBlock(ctxTargetId); hideCtxMenu(); });
+document.getElementById('ctx-delete-selected').addEventListener('click', () => { deleteMultiSelected(); hideCtxMenu(); });
 
 document.addEventListener('click', e => {
   if (!ctxMenu.contains(e.target)) hideCtxMenu();
@@ -1841,6 +2230,7 @@ document.getElementById('btn-connect').addEventListener('click', () => {
 
 document.getElementById('btn-export').addEventListener('click', exportMD);
 document.getElementById('btn-load').addEventListener('click', () => fileInput.click());
+document.getElementById('btn-merge').addEventListener('click', () => document.getElementById('merge-input').click());
 document.getElementById('btn-fit').addEventListener('click', fitAll);
 document.getElementById('btn-theme').addEventListener('click', toggleTheme);
 document.getElementById('btn-help').addEventListener('click', showHelp);
@@ -1851,6 +2241,10 @@ document.getElementById('help-overlay').addEventListener('click', e => {
 
 document.getElementById('btn-undo').addEventListener('click', undo);
 document.getElementById('btn-redo').addEventListener('click', redo);
+document.getElementById('btn-multiselect').addEventListener('click', () => {
+  if (state.multiSelectMode) exitMultiSelectMode();
+  else enterMultiSelectMode();
+});
 
 // ==================== SEARCH ====================
 const searchInput = document.getElementById('search-input');
@@ -1959,6 +2353,7 @@ document.getElementById('reset-overlay').addEventListener('click', e => {
 function hardReset() {
   // Wipe localStorage
   localStorage.removeItem('cccanvas-data');
+  clearIDB();
   // Clear all DOM blocks
   canvas.querySelectorAll('.block').forEach(el => el.remove());
   svg.innerHTML = '';
@@ -2033,7 +2428,9 @@ function autoSave() {
 
 function saveToLocalStorage() {
   const data = { blocks: state.blocks, connections: state.connections, nextId: state.nextId, panX: state.panX, panY: state.panY, zoom: state.zoom };
-  localStorage.setItem('cccanvas-data', JSON.stringify(data));
+  const json = JSON.stringify(data);
+  localStorage.setItem('cccanvas-data', json);
+  saveToIDB(json);
   state.dirty = false;
   saveDot.className = '';
 }
@@ -2051,6 +2448,48 @@ function loadFromLocalStorage() {
     state.zoom = data.zoom || 1;
     return true;
   } catch { return false; }
+}
+
+// ==================== INDEXEDDB (persistent backup) ====================
+// IndexedDB is much harder to accidentally clear than localStorage.
+// It survives "Clear cookies", low-storage warnings, and browser cache clears.
+let _idb = null;
+
+function openIDB() {
+  return new Promise((resolve, reject) => {
+    if (_idb) { resolve(_idb); return; }
+    const req = indexedDB.open('cccanvas', 1);
+    req.onupgradeneeded = e => {
+      e.target.result.createObjectStore('canvas', { keyPath: 'id' });
+    };
+    req.onsuccess = e => { _idb = e.target.result; resolve(_idb); };
+    req.onerror = () => reject(req.error);
+  });
+}
+
+function saveToIDB(json) {
+  openIDB().then(db => {
+    const tx = db.transaction('canvas', 'readwrite');
+    tx.objectStore('canvas').put({ id: 'main', data: json, ts: Date.now() });
+  }).catch(() => {}); // fail silently — localStorage is the primary store
+}
+
+function loadFromIDB() {
+  return openIDB().then(db => {
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction('canvas', 'readonly');
+      const req = tx.objectStore('canvas').get('main');
+      req.onsuccess = () => resolve(req.result?.data || null);
+      req.onerror = () => reject(req.error);
+    });
+  });
+}
+
+function clearIDB() {
+  openIDB().then(db => {
+    const tx = db.transaction('canvas', 'readwrite');
+    tx.objectStore('canvas').delete('main');
+  }).catch(() => {});
 }
 
 // ==================== MARKDOWN EXPORT / IMPORT ====================
@@ -2151,6 +2590,113 @@ fileInput.addEventListener('change', e => {
   reader.onload = ev => { importMD(ev.target.result); fileInput.value = ''; };
   reader.readAsText(file);
 });
+
+document.getElementById('merge-input').addEventListener('change', e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = ev => { mergeMD(ev.target.result); document.getElementById('merge-input').value = ''; };
+  reader.readAsText(file);
+});
+
+function mergeMD(text) {
+  // If canvas is empty, just import
+  if (!state.blocks.length) { importMD(text); return; }
+
+  snapshot();
+
+  // Parse incoming blocks
+  const blockReg = /<!-- block ([^>]+) -->([\s\S]*?)<!-- \/block -->/g;
+  const newBlocks = [];
+  let m;
+  while ((m = blockReg.exec(text)) !== null) {
+    const attrs = parseAttrs(m[1]);
+    newBlocks.push({
+      origId: attrs.id,
+      x: parseFloat(attrs.x) || 0,
+      y: parseFloat(attrs.y) || 0,
+      w: parseInt(attrs.w) || 220,
+      h: attrs.h ? parseInt(attrs.h) : null,
+      manualSize: attrs.ms === '1',
+      content: m[2].trim(),
+      color: attrs.color || '',
+    });
+  }
+
+  // Parse incoming connections (using original IDs)
+  const connSec = text.match(/<!-- connections\n([\s\S]*?)-->/);
+  const incomingConns = [];
+  if (connSec) {
+    const lines = connSec[1].trim().split('\n');
+    for (const line of lines) {
+      const cm = line.match(/(\S+):\s*(\S+)\s*->\s*(\S+)/);
+      if (cm) incomingConns.push({ origId: cm[1], from: cm[2], to: cm[3] });
+    }
+  }
+
+  // Remap IDs to avoid collisions with existing blocks
+  const idMap = {}; // origId → newId
+  for (const nb of newBlocks) {
+    const newId = 'b' + (state.nextId++);
+    idMap[nb.origId] = newId;
+    nb.id = newId;
+    delete nb.origId;
+  }
+
+  // Resolve overlaps — move each new block so it doesn't overlap existing ones
+  const CARD_H = 120;
+  const PAD = 24;
+
+  function overlaps(ax, ay, aw, bx, by, bw) {
+    const ah = CARD_H, bh = CARD_H;
+    return ax < bx + bw + PAD && ax + aw + PAD > bx && ay < by + bh + PAD && ay + ah + PAD > by;
+  }
+
+  function allBlocks() { return [...state.blocks, ...newBlocks.filter(nb => nb._placed)]; }
+
+  // Which new blocks have connections to other new blocks?
+  const connectedOrigIds = new Set();
+  for (const c of incomingConns) { connectedOrigIds.add(c.from); connectedOrigIds.add(c.to); }
+
+  for (const nb of newBlocks) {
+    nb._placed = false;
+    let { x, y, w } = nb;
+    let attempts = 0;
+    while (attempts < 200) {
+      const clash = allBlocks().some(eb => overlaps(x, y, w, eb.x, eb.y, eb.w || 220));
+      if (!clash) break;
+      x += (w || 220) + PAD;
+      // Wrap to next row after 4 columns
+      if (attempts % 4 === 3) { x = nb.x; y += CARD_H + PAD; }
+      attempts++;
+    }
+    nb.x = x; nb.y = y;
+    nb._placed = true;
+  }
+
+  // Add new blocks to state
+  for (const nb of newBlocks) {
+    delete nb._placed;
+    state.blocks.push(nb);
+  }
+
+  // Add connections with remapped IDs
+  for (const c of incomingConns) {
+    const fromId = idMap[c.from];
+    const toId = idMap[c.to];
+    if (!fromId || !toId) continue;
+    const exists = state.connections.find(ec =>
+      (ec.from === fromId && ec.to === toId) || (ec.from === toId && ec.to === fromId)
+    );
+    if (!exists) state.connections.push({ id: 'c' + (state.nextId++), from: fromId, to: toId });
+  }
+
+  renderAll();
+  applyTransform();
+  updateStatus();
+  markDirty();
+  showToast(`Merged ${newBlocks.length} card${newBlocks.length !== 1 ? 's' : ''}`);
+}
 
 // ==================== RENDER ALL ====================
 function renderAll() {
@@ -2284,33 +2830,58 @@ function boot() {
   const loaded = loadFromLocalStorage();
 
   if (!loaded) {
-    // Welcome blocks
-    const b1 = createBlock(120, 100, 'Welcome to CCCanvas ✦\n\nTap the + button to toggle add mode, then tap anywhere to add a block.');
-    const b2 = createBlock(460, 100, 'Connect blocks by pressing C or clicking the ○ port on a block.');
-    const b3 = createBlock(280, 280, 'Everything saves automatically. Export as .md to sync across devices.');
-    b1.w = 280; b2.w = 260; b3.w = 300;
-    renderBlock(b1); renderBlock(b2); renderBlock(b3);
-    state.connections.push({ id: 'c1', from: b1.id, to: b3.id });
-    state.connections.push({ id: 'c2', from: b2.id, to: b3.id });
-    renderConnections();
-    state.panX = (canvasWrap.offsetWidth - 700) / 2;
-    state.panY = 60;
-    state.zoom = 1;
-    saveToLocalStorage();
-    setTimeout(() => showHelp(), 600);
+    // localStorage empty — try IndexedDB recovery
+    loadFromIDB().then(json => {
+      if (json) {
+        try {
+          const data = JSON.parse(json);
+          state.blocks = data.blocks || [];
+          state.connections = data.connections || [];
+          state.nextId = data.nextId || 1;
+          state.panX = data.panX || 0;
+          state.panY = data.panY || 0;
+          state.zoom = data.zoom || 1;
+          // Restore to localStorage too
+          localStorage.setItem('cccanvas-data', json);
+          renderAll();
+          applyTransform();
+          updateStatus();
+          showToast('Recovered from backup ✦');
+          return;
+        } catch {}
+      }
+      // Truly fresh — show welcome
+      bootFresh();
+    }).catch(() => bootFresh());
   } else {
     renderAll();
+    finishBoot();
   }
+}
 
+function bootFresh() {
+  const b1 = createBlock(120, 100, 'Welcome to CCCanvas ✦\n\nTap the + button to toggle add mode, then tap anywhere to add a card.');
+  const b2 = createBlock(460, 100, 'Connect cards by pressing C or tapping the ○ port on a card.');
+  const b3 = createBlock(280, 280, 'Everything saves automatically. Export as .md to back up.');
+  b1.w = 280; b2.w = 260; b3.w = 300;
+  renderBlock(b1); renderBlock(b2); renderBlock(b3);
+  state.connections.push({ id: 'c1', from: b1.id, to: b3.id });
+  state.connections.push({ id: 'c2', from: b2.id, to: b3.id });
+  renderConnections();
+  state.panX = (canvasWrap.offsetWidth - 700) / 2;
+  state.panY = 60;
+  state.zoom = 1;
+  saveToLocalStorage();
+  finishBoot();
+  setTimeout(() => showHelp(), 600);
+}
+
+function finishBoot() {
   applyTransform();
   updateStatus();
-
-  // Reset undo history on load — don't pollute stack with init snapshots
   state.undoStack = [];
   state.redoStack = [];
   updateUndoButtons();
-
-  // Auto-save on content changes
   setInterval(() => {
     if (state.dirty) saveToLocalStorage();
   }, 5000);
